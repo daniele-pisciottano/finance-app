@@ -18,20 +18,42 @@ import { formatCurrency, generateId } from '@/lib/utils'
 import { PRIMARY_CATEGORIES, CATEGORY_ICONS, type PrimaryCategory, type Transaction } from '@/types'
 import { dbOperations } from '@/lib/db'
 
+// Generate list of months for selection (current year and previous year)
+function generateMonthOptions(): { value: string; label: string }[] {
+  const months = []
+  const currentYear = new Date().getFullYear()
+  const monthNames = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic']
+
+  for (let year = currentYear; year >= currentYear - 1; year--) {
+    for (let month = 12; month >= 1; month--) {
+      const value = `${year}-${String(month).padStart(2, '0')}`
+      const label = `${monthNames[month - 1]} ${year}`
+      months.push({ value, label })
+    }
+  }
+  return months
+}
+
 export function Settings() {
   const { settings, updateSettings, savingGoals, setSavingGoal, currentMonth, importData, exportData, addSubcategory, transactions } = useStore()
   const [newGoal, setNewGoal] = useState(settings.defaultSavingGoal.toString())
   const [exportLoading, setExportLoading] = useState(false)
   const [csvExportLoading, setCsvExportLoading] = useState(false)
   const [csvExportMonth, setCsvExportMonth] = useState(currentMonth)
+  const [csvImportMonth, setCsvImportMonth] = useState(currentMonth)
+  const [csvImportLoading, setCsvImportLoading] = useState(false)
   const [selectedCategory, setSelectedCategory] = useState<PrimaryCategory | ''>('')
   const [newSubcategoryName, setNewSubcategoryName] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const csvFileInputRef = useRef<HTMLInputElement>(null)
 
   const currentGoal = savingGoals.find(g => g.month === currentMonth)
 
-  // Get available months from transactions
+  // Get available months from transactions for export
   const availableMonths = [...new Set(transactions.map(t => t.date.slice(0, 7)))].sort().reverse()
+
+  // All months for import
+  const allMonths = generateMonthOptions()
 
   const handleThemeToggle = () => {
     const newDarkMode = !settings.darkMode
@@ -93,7 +115,7 @@ export function Settings() {
         }
 
         const expenseName = escapeCsv(t.description || `${t.primaryCategory} - ${t.secondaryCategory}`)
-        // Extract only the day number from the date (e.g., "2025-02-15" -> "15")
+        // Extract only the day number from the date
         const dayNumber = parseInt(t.date.split('-')[2], 10).toString()
         const amount = t.amount.toFixed(2)
         const primary = t.primaryCategory || ''
@@ -120,7 +142,7 @@ export function Settings() {
     }
   }
 
-  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImportJSON = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
@@ -128,9 +150,20 @@ export function Settings() {
       const text = await file.text()
       const data = JSON.parse(text)
 
-      if (data.transactions) {
-        await importData({ transactions: data.transactions })
-        alert(`Importate ${data.transactions.length} transazioni con successo!`)
+      if (data.transactions && Array.isArray(data.transactions)) {
+        // Validate transactions before import
+        const validTransactions = data.transactions.filter((t: Transaction) =>
+          t.id && t.type && t.date && typeof t.amount === 'number'
+        )
+
+        if (validTransactions.length > 0) {
+          await importData({ transactions: validTransactions })
+          alert(`Importate ${validTransactions.length} transazioni con successo!`)
+        } else {
+          alert('Nessuna transazione valida trovata nel file.')
+        }
+      } else {
+        alert('Formato file non valido. Assicurati che sia un backup JSON valido.')
       }
     } catch (error) {
       console.error('Import failed:', error)
@@ -142,63 +175,120 @@ export function Settings() {
     }
   }
 
+  // New CSV import handler - expenses only with day number + selected month
   const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+
+    setCsvImportLoading(true)
 
     try {
       const text = await file.text()
       const lines = text.split('\n').filter(line => line.trim())
 
-      // Skip header if present
-      const startIndex = lines[0].includes('date') || lines[0].includes('Data') ? 1 : 0
+      if (lines.length === 0) {
+        alert('Il file è vuoto.')
+        return
+      }
 
-      const transactions: Transaction[] = []
+      // Check if first line is header
+      const firstLine = lines[0].toLowerCase()
+      const hasHeader = firstLine.includes('expense') || firstLine.includes('date') ||
+                        firstLine.includes('amount') || firstLine.includes('primary') ||
+                        firstLine.includes('name') || firstLine.includes('secondary')
+      const startIndex = hasHeader ? 1 : 0
+
+      const newTransactions: Transaction[] = []
+      const errors: string[] = []
+      const [year, month] = csvImportMonth.split('-')
 
       for (let i = startIndex; i < lines.length; i++) {
-        const line = lines[i]
-        // Try to parse CSV (handle quoted values)
-        const values = line.match(/(?:^|,)("(?:[^"]*(?:""[^"]*)*)"|[^,]*)/g)?.map(v =>
-          v.replace(/^,/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim()
-        ) || line.split(',').map(v => v.trim())
+        const line = lines[i].trim()
+        if (!line) continue
 
-        if (values.length >= 4) {
-          const [date, amount, category, subcategory, description = ''] = values
+        try {
+          // Parse CSV line (handle quoted values)
+          const values = line.match(/(?:^|,)("(?:[^"]*(?:""[^"]*)*)"|[^,]*)/g)?.map(v =>
+            v.replace(/^,/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim()
+          ) || line.split(',').map(v => v.trim())
 
-          // Determine if income or expense
-          const numAmount = parseFloat(amount.replace(/[€$,]/g, ''))
-          const isIncome = numAmount > 0 || category.toLowerCase().includes('income') || category.toLowerCase().includes('stipend')
-
-          if (!isNaN(numAmount) && date) {
-            transactions.push({
-              id: generateId(),
-              type: isIncome ? 'income' : 'expense',
-              date: date.includes('/') ? date.split('/').reverse().join('-') : date,
-              amount: Math.abs(numAmount),
-              primaryCategory: isIncome ? undefined : (category as PrimaryCategory),
-              secondaryCategory: isIncome ? undefined : subcategory,
-              description: description || '',
-              incomeType: isIncome ? 'Stipendio' : undefined,
-              createdAt: Date.now(),
-              updatedAt: Date.now()
-            })
+          if (values.length < 4) {
+            errors.push(`Riga ${i + 1}: formato non valido (servono almeno 4 colonne)`)
+            continue
           }
+
+          // Expected format: Expense name, Date (day number), Amount, Primary, Secondary
+          const [expenseName, dayStr, amountStr, primary, secondary = ''] = values
+
+          // Parse day number
+          const day = parseInt(dayStr, 10)
+          if (isNaN(day) || day < 1 || day > 31) {
+            errors.push(`Riga ${i + 1}: giorno non valido "${dayStr}"`)
+            continue
+          }
+
+          // Parse amount (always positive, it's an expense)
+          const amount = Math.abs(parseFloat(amountStr.replace(/[€$,\s]/g, '').replace(',', '.')))
+          if (isNaN(amount) || amount <= 0) {
+            errors.push(`Riga ${i + 1}: importo non valido "${amountStr}"`)
+            continue
+          }
+
+          // Validate primary category
+          const validPrimary = PRIMARY_CATEGORIES.includes(primary as PrimaryCategory)
+          if (!validPrimary) {
+            errors.push(`Riga ${i + 1}: categoria "${primary}" non valida`)
+            continue
+          }
+
+          // Build the full date
+          const fullDate = `${year}-${month}-${String(day).padStart(2, '0')}`
+
+          newTransactions.push({
+            id: generateId(),
+            type: 'expense',
+            date: fullDate,
+            amount: amount,
+            primaryCategory: primary as PrimaryCategory,
+            secondaryCategory: secondary || undefined,
+            description: expenseName || '',
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+          })
+        } catch (err) {
+          errors.push(`Riga ${i + 1}: errore di parsing`)
         }
       }
 
-      if (transactions.length > 0) {
-        await importData({ transactions })
-        alert(`Importate ${transactions.length} transazioni con successo!`)
+      if (newTransactions.length > 0) {
+        await importData({ transactions: newTransactions })
+
+        let message = `Importate ${newTransactions.length} spese per ${allMonths.find(m => m.value === csvImportMonth)?.label}!`
+        if (errors.length > 0) {
+          message += `\n\n${errors.length} righe ignorate:\n${errors.slice(0, 5).join('\n')}`
+          if (errors.length > 5) {
+            message += `\n... e altre ${errors.length - 5}`
+          }
+        }
+        alert(message)
       } else {
-        alert('Nessuna transazione valida trovata nel file.')
+        let message = 'Nessuna spesa valida trovata nel file.'
+        if (errors.length > 0) {
+          message += `\n\nErrori:\n${errors.slice(0, 5).join('\n')}`
+          if (errors.length > 5) {
+            message += `\n... e altri ${errors.length - 5}`
+          }
+        }
+        alert(message)
       }
     } catch (error) {
       console.error('CSV Import failed:', error)
-      alert('Errore durante l\'importazione CSV. Verifica il formato del file.')
-    }
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ''
+      alert('Errore durante l\'importazione. Verifica il formato del file.')
+    } finally {
+      setCsvImportLoading(false)
+      if (csvFileInputRef.current) {
+        csvFileInputRef.current.value = ''
+      }
     }
   }
 
@@ -341,7 +431,7 @@ export function Settings() {
           {/* Export CSV */}
           <div className="space-y-3">
             <Label className="text-sm text-muted-foreground block">
-              Esporta spese mensili in CSV (Expense name, Date, Amount, Primary, Secondary)
+              Esporta spese mensili in CSV
             </Label>
             <div className="flex flex-col sm:flex-row gap-2">
               <Select value={csvExportMonth} onValueChange={setCsvExportMonth}>
@@ -351,12 +441,12 @@ export function Settings() {
                 <SelectContent>
                   {availableMonths.length > 0 ? (
                     availableMonths.map((month) => {
-                      const [year, m] = month.split('-')
+                      const [y, m] = month.split('-')
                       const monthNames = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic']
                       const monthName = monthNames[parseInt(m, 10) - 1]
                       return (
                         <SelectItem key={month} value={month}>
-                          {monthName} {year}
+                          {monthName} {y}
                         </SelectItem>
                       )
                     })
@@ -376,8 +466,51 @@ export function Settings() {
                 {csvExportLoading ? 'Esportando...' : 'Esporta CSV'}
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Formato: Expense name, Date (giorno), Amount, Primary, Secondary
+            </p>
           </div>
 
+          {/* Import CSV */}
+          <div className="border-t pt-4 space-y-3">
+            <Label className="text-sm text-muted-foreground block">
+              Importa spese da CSV (seleziona il mese di riferimento)
+            </Label>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Select value={csvImportMonth} onValueChange={setCsvImportMonth}>
+                <SelectTrigger className="sm:w-[180px]">
+                  <SelectValue placeholder="Seleziona mese" />
+                </SelectTrigger>
+                <SelectContent>
+                  {allMonths.map((month) => (
+                    <SelectItem key={month.value} value={month.value}>
+                      {month.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <input
+                ref={csvFileInputRef}
+                type="file"
+                accept=".csv"
+                onChange={handleImportCSV}
+                className="hidden"
+              />
+              <Button
+                variant="outline"
+                onClick={() => csvFileInputRef.current?.click()}
+                disabled={csvImportLoading}
+              >
+                <Upload className="h-4 w-4 mr-2" />
+                {csvImportLoading ? 'Importando...' : 'Importa CSV'}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Formato richiesto: Expense name, Date (giorno 1-31), Amount, Primary, Secondary
+            </p>
+          </div>
+
+          {/* JSON Backup */}
           <div className="border-t pt-4">
             <Label className="text-sm text-muted-foreground mb-2 block">
               Backup completo (JSON) - include tutte le transazioni e impostazioni
@@ -388,45 +521,18 @@ export function Settings() {
                 {exportLoading ? 'Esportando...' : 'Esporta JSON'}
               </Button>
 
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".json"
+                onChange={handleImportJSON}
+                className="hidden"
+              />
               <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
                 <Upload className="h-4 w-4 mr-2" />
                 Importa JSON
               </Button>
             </div>
-          </div>
-
-          <div className="border-t pt-4">
-            <Label className="text-sm text-muted-foreground mb-2 block">
-              Importa da CSV (formato: data, importo, categoria, sottocategoria, descrizione)
-            </Label>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".json,.csv"
-              onChange={(e) => {
-                const file = e.target.files?.[0]
-                if (file?.name.endsWith('.csv')) {
-                  handleImportCSV(e)
-                } else {
-                  handleImport(e)
-                }
-              }}
-              className="hidden"
-            />
-            <Button
-              variant="outline"
-              className="w-full sm:w-auto"
-              onClick={() => {
-                if (fileInputRef.current) {
-                  fileInputRef.current.accept = '.csv'
-                  fileInputRef.current.click()
-                  fileInputRef.current.accept = '.json,.csv'
-                }
-              }}
-            >
-              <Upload className="h-4 w-4 mr-2" />
-              Importa CSV
-            </Button>
           </div>
         </CardContent>
       </Card>
@@ -453,7 +559,7 @@ export function Settings() {
           <div className="text-center text-sm text-muted-foreground space-y-1">
             <div className="font-semibold">Finance Tracker</div>
             <div>Versione 1.1.0</div>
-            <div>PWA per la gestione finanziaria personale - Maddaniello © </div>
+            <div>PWA per la gestione finanziaria personale</div>
           </div>
         </CardContent>
       </Card>
