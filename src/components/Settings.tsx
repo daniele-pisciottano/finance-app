@@ -19,14 +19,19 @@ import { PRIMARY_CATEGORIES, CATEGORY_ICONS, type PrimaryCategory, type Transact
 import { dbOperations } from '@/lib/db'
 
 export function Settings() {
-  const { settings, updateSettings, savingGoals, setSavingGoal, currentMonth, importData, exportData, addSubcategory } = useStore()
+  const { settings, updateSettings, savingGoals, setSavingGoal, currentMonth, importData, exportData, addSubcategory, transactions } = useStore()
   const [newGoal, setNewGoal] = useState(settings.defaultSavingGoal.toString())
   const [exportLoading, setExportLoading] = useState(false)
+  const [csvExportLoading, setCsvExportLoading] = useState(false)
+  const [csvExportMonth, setCsvExportMonth] = useState(currentMonth)
   const [selectedCategory, setSelectedCategory] = useState<PrimaryCategory | ''>('')
   const [newSubcategoryName, setNewSubcategoryName] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const currentGoal = savingGoals.find(g => g.month === currentMonth)
+
+  // Get available months from transactions
+  const availableMonths = [...new Set(transactions.map(t => t.date.slice(0, 7)))].sort().reverse()
 
   const handleThemeToggle = () => {
     const newDarkMode = !settings.darkMode
@@ -57,6 +62,60 @@ export function Settings() {
       URL.revokeObjectURL(url)
     } finally {
       setExportLoading(false)
+    }
+  }
+
+  const handleExportCSV = () => {
+    setCsvExportLoading(true)
+    try {
+      // Filter only expenses for the selected month
+      const expenses = transactions.filter(t =>
+        t.type === 'expense' && t.date.startsWith(csvExportMonth)
+      )
+
+      if (expenses.length === 0) {
+        alert('Nessuna spesa trovata per il mese selezionato')
+        return
+      }
+
+      // CSV Header
+      const header = 'Expense name,Date,Amount,Primary,Secondary'
+
+      // CSV Rows
+      const rows = expenses.map(t => {
+        // Escape values that might contain commas or quotes
+        const escapeCsv = (value: string) => {
+          if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+            return `"${value.replace(/"/g, '""')}"`
+          }
+          return value
+        }
+
+        const expenseName = escapeCsv(t.description || `${t.primaryCategory} - ${t.secondaryCategory}`)
+        // Extract only the day number from the date (e.g., "2025-02-15" -> "15")
+        const dayNumber = parseInt(t.date.split('-')[2], 10).toString()
+        const amount = t.amount.toFixed(2)
+        const primary = t.primaryCategory || ''
+        const secondary = t.secondaryCategory || ''
+
+        return `${expenseName},${dayNumber},${amount},${primary},${secondary}`
+      })
+
+      // Combine header and rows
+      const csvContent = [header, ...rows].join('\n')
+
+      // Download with month in filename
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `expenses-${csvExportMonth}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } finally {
+      setCsvExportLoading(false)
     }
   }
 
@@ -278,16 +337,61 @@ export function Settings() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <Button variant="outline" onClick={handleExport} disabled={exportLoading}>
-              <Download className="h-4 w-4 mr-2" />
-              {exportLoading ? 'Esportando...' : 'Esporta JSON'}
-            </Button>
+          {/* Export CSV */}
+          <div className="space-y-3">
+            <Label className="text-sm text-muted-foreground block">
+              Esporta spese mensili in CSV (Expense name, Date, Amount, Primary, Secondary)
+            </Label>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Select value={csvExportMonth} onValueChange={setCsvExportMonth}>
+                <SelectTrigger className="sm:w-[180px]">
+                  <SelectValue placeholder="Seleziona mese" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableMonths.length > 0 ? (
+                    availableMonths.map((month) => {
+                      const [year, m] = month.split('-')
+                      const monthNames = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic']
+                      const monthName = monthNames[parseInt(m, 10) - 1]
+                      return (
+                        <SelectItem key={month} value={month}>
+                          {monthName} {year}
+                        </SelectItem>
+                      )
+                    })
+                  ) : (
+                    <SelectItem value={currentMonth} disabled>
+                      Nessun dato
+                    </SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                onClick={handleExportCSV}
+                disabled={csvExportLoading || availableMonths.length === 0}
+              >
+                <Download className="h-4 w-4 mr-2" />
+                {csvExportLoading ? 'Esportando...' : 'Esporta CSV'}
+              </Button>
+            </div>
+          </div>
 
-            <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
-              <Upload className="h-4 w-4 mr-2" />
-              Importa JSON
-            </Button>
+          <div className="border-t pt-4">
+            <Label className="text-sm text-muted-foreground mb-2 block">
+              Backup completo (JSON) - include tutte le transazioni e impostazioni
+            </Label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <Button variant="outline" onClick={handleExport} disabled={exportLoading}>
+                <Download className="h-4 w-4 mr-2" />
+                {exportLoading ? 'Esportando...' : 'Esporta JSON'}
+              </Button>
+
+              <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
+                <Upload className="h-4 w-4 mr-2" />
+                Importa JSON
+              </Button>
+            </div>
           </div>
 
           <div className="border-t pt-4">
