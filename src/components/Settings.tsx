@@ -452,8 +452,8 @@ export function Settings() {
         <CardContent className="pt-6">
           <div className="text-center text-sm text-muted-foreground space-y-1">
             <div className="font-semibold">Finance Tracker</div>
-            <div>Versione 1.0.0</div>
-            <div>PWA per la gestione finanziaria personale</div>
+            <div>Versione 1.1.0</div>
+            <div>PWA per la gestione finanziaria personale - Maddaniello © </div>
           </div>
         </CardContent>
       </Card>
