@@ -75,6 +75,7 @@ export function Settings() {
 
       if (expenses.length === 0) {
         alert('Nessuna spesa trovata per il mese selezionato')
+        setCsvExportLoading(false)
         return
       }
 
