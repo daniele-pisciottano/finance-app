@@ -559,7 +559,11 @@ export function Settings() {
           <div className="text-center text-sm text-muted-foreground space-y-1">
             <div className="font-semibold">Finance Tracker</div>
             <div>Versione 1.1.0</div>
+<<<<<<< HEAD
             <div>PWA per la gestione finanziaria personale</div>
+=======
+            <div>PWA per la gestione finanziaria personale - Maddaniello ©</div>
+>>>>>>> b61e484b38901fbf99149d9e4984d9674b1496e3
           </div>
         </CardContent>
       </Card>
