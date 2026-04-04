@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { format, parseISO } from 'date-fns'
 import { it } from 'date-fns/locale'
-import { Trash2, ChevronDown, TrendingUp, TrendingDown } from 'lucide-react'
+import { Trash2, Pencil, ChevronDown, TrendingUp, TrendingDown, Repeat } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -20,9 +20,10 @@ import { cn } from '@/lib/utils'
 interface TransactionListProps {
   limit?: number
   showFilters?: boolean
+  onEdit?: (transaction: Transaction) => void
 }
 
-export function TransactionList({ limit, showFilters = false }: TransactionListProps) {
+export function TransactionList({ limit, showFilters = false, onEdit }: TransactionListProps) {
   const { transactions, deleteTransaction, currentMonth } = useStore()
   const [typeFilter, setTypeFilter] = useState<'all' | 'expense' | 'income'>('all')
   const [categoryFilter, setCategoryFilter] = useState<string>('all')
@@ -126,6 +127,7 @@ export function TransactionList({ limit, showFilters = false }: TransactionListP
             expanded={expandedId === transaction.id}
             onToggle={() => setExpandedId(expandedId === transaction.id ? null : transaction.id)}
             onDelete={() => handleDelete(transaction.id)}
+            onEdit={onEdit ? () => onEdit(transaction) : undefined}
           />
         ))}
       </div>
@@ -138,9 +140,10 @@ interface TransactionItemProps {
   expanded: boolean
   onToggle: () => void
   onDelete: () => void
+  onEdit?: () => void
 }
 
-function TransactionItem({ transaction, expanded, onToggle, onDelete }: TransactionItemProps) {
+function TransactionItem({ transaction, expanded, onToggle, onDelete, onEdit }: TransactionItemProps) {
   const isExpense = transaction.type === 'expense'
 
   return (
@@ -184,6 +187,15 @@ function TransactionItem({ transaction, expanded, onToggle, onDelete }: Transact
               <>
                 <span>•</span>
                 <span>{transaction.secondaryCategory}</span>
+              </>
+            )}
+            {transaction.isRecurring && (
+              <>
+                <span>•</span>
+                <span className="flex items-center gap-0.5 text-primary">
+                  <Repeat className="h-3 w-3" />
+                  Ricorrente
+                </span>
               </>
             )}
           </div>
@@ -246,6 +258,19 @@ function TransactionItem({ transaction, expanded, onToggle, onDelete }: Transact
 
           {/* Actions */}
           <div className="flex justify-end gap-2 pt-2 border-t">
+            {onEdit && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onEdit()
+                }}
+              >
+                <Pencil className="h-4 w-4 mr-1" />
+                Modifica
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"

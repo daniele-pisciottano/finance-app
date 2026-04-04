@@ -7,10 +7,22 @@ import { Settings } from '@/components/Settings'
 import { TransactionForm } from '@/components/TransactionForm'
 import { useStore } from '@/store/useStore'
 import { cn } from '@/lib/utils'
+import type { Transaction } from '@/types'
 
 function App() {
   const { initialize, isLoading, initialized, activeTab, setActiveTab, settings } = useStore()
   const [formOpen, setFormOpen] = useState(false)
+  const [editTransaction, setEditTransaction] = useState<Transaction | undefined>(undefined)
+
+  const handleEdit = (transaction: Transaction) => {
+    setEditTransaction(transaction)
+    setFormOpen(true)
+  }
+
+  const handleFormClose = (open: boolean) => {
+    setFormOpen(open)
+    if (!open) setEditTransaction(undefined)
+  }
 
   useEffect(() => {
     initialize()
@@ -48,7 +60,7 @@ function App() {
 
       {/* Main Content */}
       <main className="container px-4 py-4 sm:py-6 sm:pl-20 lg:pl-60">
-        {activeTab === 'dashboard' && <Dashboard />}
+        {activeTab === 'dashboard' && <Dashboard onEditTransaction={handleEdit} />}
         {activeTab === 'analytics' && <Analytics />}
         {activeTab === 'settings' && <Settings />}
       </main>
@@ -57,14 +69,14 @@ function App() {
       <Button
         size="fab"
         className="fixed bottom-20 right-4 sm:bottom-6 sm:right-6 z-50 shadow-xl hover:shadow-2xl transition-shadow"
-        onClick={() => setFormOpen(true)}
+        onClick={() => { setEditTransaction(undefined); setFormOpen(true) }}
       >
         <Plus className="h-6 w-6" />
         <span className="sr-only">Aggiungi transazione</span>
       </Button>
 
       {/* Transaction Form Dialog */}
-      <TransactionForm open={formOpen} onOpenChange={setFormOpen} />
+      <TransactionForm open={formOpen} onOpenChange={handleFormClose} editTransaction={editTransaction} />
 
       {/* Bottom Navigation - Mobile */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 border-t bg-background sm:hidden">

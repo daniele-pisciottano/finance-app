@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { getDaysInMonth, getDate } from 'date-fns'
 import { TrendingUp, TrendingDown, Target, AlertTriangle, CheckCircle, Info, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -10,7 +10,11 @@ import { CATEGORY_ICONS } from '@/types'
 import { CategoryChart } from '@/components/CategoryChart'
 import { TransactionList } from '@/components/TransactionList'
 
-export function Dashboard() {
+interface DashboardProps {
+  onEditTransaction?: (transaction: import('@/types').Transaction) => void
+}
+
+export function Dashboard({ onEditTransaction }: DashboardProps) {
   const {
     currentMonth,
     setCurrentMonth,
@@ -19,8 +23,11 @@ export function Dashboard() {
     getAlerts,
     getCategoryBreakdown,
     savingGoals,
-    settings
+    settings,
+    transactions
   } = useStore()
+
+  const [showAllTransactions, setShowAllTransactions] = useState(false)
 
   const currentStats = getCurrentMonthStats()
   const previousStats = getPreviousMonthStats()
@@ -288,7 +295,24 @@ export function Dashboard() {
           <CardTitle className="text-base">Transazioni Recenti</CardTitle>
         </CardHeader>
         <CardContent>
-          <TransactionList limit={10} />
+          <TransactionList limit={showAllTransactions ? undefined : 10} onEdit={onEditTransaction} />
+          {(() => {
+            const monthCount = transactions.filter(t => t.date.startsWith(currentMonth)).length
+            if (monthCount > 10) {
+              return (
+                <Button
+                  variant="ghost"
+                  className="w-full mt-3"
+                  onClick={() => setShowAllTransactions(!showAllTransactions)}
+                >
+                  {showAllTransactions
+                    ? 'Mostra meno'
+                    : `Visualizza tutto (${monthCount})`}
+                </Button>
+              )
+            }
+            return null
+          })()}
         </CardContent>
       </Card>
     </div>

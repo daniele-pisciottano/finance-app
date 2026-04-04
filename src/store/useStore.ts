@@ -75,8 +75,42 @@ export const useStore = create<FinanceState>()(
             dbOperations.getSettings()
           ])
 
+          // Apply recurring transactions for the current month
+          const currentMonth = format(new Date(), 'yyyy-MM')
+          const recurringTransactions = transactions.filter(t => t.isRecurring)
+          const newRecurring: Transaction[] = []
+
+          for (const recurring of recurringTransactions) {
+            // Check if a copy already exists for this month
+            const alreadyExists = transactions.some(t =>
+              !t.isRecurring &&
+              t.date.startsWith(currentMonth) &&
+              t.amount === recurring.amount &&
+              t.primaryCategory === recurring.primaryCategory &&
+              t.secondaryCategory === recurring.secondaryCategory &&
+              t.description === recurring.description
+            )
+
+            if (!alreadyExists) {
+              const newTransaction: Transaction = {
+                ...recurring,
+                id: generateId(),
+                date: `${currentMonth}-01`,
+                isRecurring: false,
+                createdAt: Date.now(),
+                updatedAt: Date.now()
+              }
+              await dbOperations.addTransaction(newTransaction)
+              newRecurring.push(newTransaction)
+            }
+          }
+
+          const allTransactions = [...newRecurring, ...transactions].sort(
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+          )
+
           set({
-            transactions,
+            transactions: allTransactions,
             savingGoals,
             settings,
             initialized: true,

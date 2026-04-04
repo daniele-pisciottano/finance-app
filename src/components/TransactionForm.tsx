@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { format } from 'date-fns'
-import { Plus, Minus } from 'lucide-react'
+import { Plus, Minus, Scissors, Repeat } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -19,16 +19,18 @@ import {
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useStore } from '@/store/useStore'
-import { PRIMARY_CATEGORIES, CATEGORY_ICONS, INCOME_TYPES, type PrimaryCategory, type IncomeType } from '@/types'
+import { PRIMARY_CATEGORIES, CATEGORY_ICONS, INCOME_TYPES, type PrimaryCategory, type IncomeType, type Transaction } from '@/types'
 import { cn } from '@/lib/utils'
 
 interface TransactionFormProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  editTransaction?: Transaction
 }
 
-export function TransactionForm({ open, onOpenChange }: TransactionFormProps) {
-  const { addTransaction, settings } = useStore()
+export function TransactionForm({ open, onOpenChange, editTransaction }: TransactionFormProps) {
+  const { addTransaction, updateTransaction, settings } = useStore()
+  const isEditing = !!editTransaction
   const [type, setType] = useState<'expense' | 'income'>('expense')
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [amount, setAmount] = useState('')
@@ -38,6 +40,7 @@ export function TransactionForm({ open, onOpenChange }: TransactionFormProps) {
   const [showNewSubcategory, setShowNewSubcategory] = useState(false)
   const [description, setDescription] = useState('')
   const [incomeType, setIncomeType] = useState<IncomeType | ''>('')
+  const [isRecurring, setIsRecurring] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Get subcategories for selected primary category
@@ -45,19 +48,34 @@ export function TransactionForm({ open, onOpenChange }: TransactionFormProps) {
     ? settings.customSubcategories[primaryCategory] || []
     : []
 
-  // Reset form when dialog opens
+  // Reset form when dialog opens, or pre-populate for editing
   useEffect(() => {
     if (open) {
-      setDate(format(new Date(), 'yyyy-MM-dd'))
-      setAmount('')
-      setPrimaryCategory('')
-      setSecondaryCategory('')
-      setNewSubcategory('')
-      setShowNewSubcategory(false)
-      setDescription('')
-      setIncomeType('')
+      if (editTransaction) {
+        setType(editTransaction.type)
+        setDate(editTransaction.date)
+        setAmount(String(editTransaction.amount))
+        setPrimaryCategory(editTransaction.primaryCategory || '')
+        setSecondaryCategory(editTransaction.secondaryCategory || '')
+        setNewSubcategory('')
+        setShowNewSubcategory(false)
+        setDescription(editTransaction.description || '')
+        setIncomeType(editTransaction.incomeType || '')
+        setIsRecurring(editTransaction.isRecurring || false)
+      } else {
+        setType('expense')
+        setDate(format(new Date(), 'yyyy-MM-dd'))
+        setAmount('')
+        setPrimaryCategory('')
+        setSecondaryCategory('')
+        setNewSubcategory('')
+        setShowNewSubcategory(false)
+        setDescription('')
+        setIncomeType('')
+        setIsRecurring(false)
+      }
     }
-  }, [open])
+  }, [open, editTransaction])
 
   // Reset secondary category when primary changes
   useEffect(() => {
@@ -80,7 +98,7 @@ export function TransactionForm({ open, onOpenChange }: TransactionFormProps) {
         ? newSubcategory
         : secondaryCategory
 
-      await addTransaction({
+      const transactionData = {
         type,
         date,
         amount: parseFloat(amount),
@@ -88,11 +106,18 @@ export function TransactionForm({ open, onOpenChange }: TransactionFormProps) {
         secondaryCategory: type === 'expense' ? finalSecondaryCategory : undefined,
         description,
         incomeType: type === 'income' ? incomeType as IncomeType : undefined,
-      })
+        isRecurring: type === 'expense' ? isRecurring : undefined,
+      }
+
+      if (isEditing) {
+        await updateTransaction(editTransaction.id, transactionData)
+      } else {
+        await addTransaction(transactionData)
+      }
 
       onOpenChange(false)
     } catch (error) {
-      console.error('Failed to add transaction:', error)
+      console.error('Failed to save transaction:', error)
     } finally {
       setIsSubmitting(false)
     }
@@ -106,7 +131,7 @@ export function TransactionForm({ open, onOpenChange }: TransactionFormProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle>Nuova Transazione</DialogTitle>
+          <DialogTitle>{isEditing ? 'Modifica Transazione' : 'Nuova Transazione'}</DialogTitle>
         </DialogHeader>
 
         <Tabs value={type} onValueChange={(v) => setType(v as 'expense' | 'income')}>
@@ -137,22 +162,35 @@ export function TransactionForm({ open, onOpenChange }: TransactionFormProps) {
             {/* Amount */}
             <div className="space-y-2">
               <Label htmlFor="amount">Importo</Label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-                  {settings.currency === 'EUR' ? '€' : '$'}
-                </span>
-                <Input
-                  id="amount"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  placeholder="0.00"
-                  className="pl-8"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  inputMode="decimal"
-                  required
-                />
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+                    {settings.currency === 'EUR' ? '€' : '$'}
+                  </span>
+                  <Input
+                    id="amount"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    className="pl-8"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    inputMode="decimal"
+                    required
+                  />
+                </div>
+                {amount && parseFloat(amount) > 0 && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    title="Dividi a meta"
+                    onClick={() => setAmount((parseFloat(amount) / 2).toFixed(2))}
+                  >
+                    <Scissors className="h-4 w-4" />
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -262,13 +300,33 @@ export function TransactionForm({ open, onOpenChange }: TransactionFormProps) {
               />
             </div>
 
+            {/* Recurring toggle - only for expenses */}
+            {type === 'expense' && (
+              <button
+                type="button"
+                onClick={() => setIsRecurring(!isRecurring)}
+                className={cn(
+                  "flex items-center gap-2 w-full p-3 rounded-lg border-2 transition-all text-sm",
+                  isRecurring
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-transparent bg-muted text-muted-foreground"
+                )}
+              >
+                <Repeat className="h-4 w-4" />
+                <span className="font-medium">Spesa ricorrente</span>
+                <span className="text-xs ml-auto">
+                  {isRecurring ? 'Attiva' : 'Ogni inizio mese'}
+                </span>
+              </button>
+            )}
+
             {/* Submit */}
             <Button
               type="submit"
               className="w-full"
               disabled={!isValid || isSubmitting}
             >
-              {isSubmitting ? 'Salvando...' : 'Salva'}
+              {isSubmitting ? 'Salvando...' : isEditing ? 'Aggiorna' : 'Salva'}
             </Button>
           </form>
         </Tabs>

@@ -84,6 +84,7 @@ export interface Transaction {
   secondaryCategory?: string
   description: string
   incomeType?: IncomeType
+  isRecurring?: boolean
   createdAt: number
   updatedAt: number
 }
