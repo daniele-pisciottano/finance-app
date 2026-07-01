@@ -72,6 +72,12 @@ export default async function handler(req: any, res: any) {
     if (!text.trim()) return res.status(400).json({ error: 'Missing text' })
 
     const parsed = parseNotification(text, title || undefined, app || undefined)
+
+    // Skip non-payment notifications (Revolut rewards/referrals, login alerts, ...).
+    if (!parsed.isPayment) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'not a payment notification' })
+    }
+
     const amount = parsed.amount != null && parsed.amount > 0 ? parsed.amount : 0
 
     const now = Date.now()
@@ -86,6 +92,7 @@ export default async function handler(req: any, res: any) {
       primaryCategory: parsed.primaryCategory,
       secondaryCategory: parsed.secondaryCategory,
       description: parsed.merchant || '',
+      capturedMerchant: parsed.merchant || undefined,
       draft: true,
       source: parsed.source,
       possibleDuplicate: false,
@@ -126,11 +133,16 @@ function firstStr(v: any): string {
 
 interface ParsedExpense {
   source: 'intesa' | 'revolut' | 'paypal' | 'unknown'
+  isPayment: boolean
   amount: number | null
   merchant: string | null
   halved: boolean
   primaryCategory?: string
   secondaryCategory?: string
+}
+
+function cleanMerchantTitle(title: string): string {
+  return title.replace(/^\s*(?:joint|current|personal|conto\w*)\s*[·•|:-]\s*/i, '').trim()
 }
 
 function parseItalianAmount(s: string): number | null {
@@ -202,7 +214,7 @@ function firstAmount(text: string, skip?: RegExp): number | null {
 
 function parseNotification(text: string, title?: string, appHint?: string): ParsedExpense {
   const source = detectSource(text, appHint)
-  const out: ParsedExpense = { source, amount: null, merchant: null, halved: false }
+  const out: ParsedExpense = { source, isPayment: false, amount: null, merchant: null, halved: false }
 
   if (source === 'intesa') {
     const m = text.match(
@@ -211,33 +223,46 @@ function parseNotification(text: string, title?: string, appHint?: string): Pars
     if (m) {
       out.amount = parseItalianAmount(m[1])
       out.merchant = m[3].trim()
+      out.isPayment = out.amount != null
       Object.assign(out, guessCategory(out.merchant))
-      return out
     }
+    return out
   }
 
   if (source === 'paypal') {
     const m = text.match(/Hai (?:inviato|pagato)\s+([\d.]*\d,\d{2})\s*€(?:\s*EUR)?\s+a\s+(.+?)[.\n]?\s*$/i)
     if (m) { out.amount = parseItalianAmount(m[1]); out.merchant = m[2].trim() }
     else { out.amount = firstAmount(text); out.merchant = title || null }
+    out.isPayment = out.amount != null
     Object.assign(out, guessCategory(out.merchant))
     return out
   }
 
   if (source === 'revolut') {
-    const line = text.match(
+    const titleMerchant = cleanMerchantTitle(title || '')
+    let raw: number | null = null
+    out.merchant = titleMerchant || null
+    const atLine = text.match(
       /(?:Paid|Spent|Pagato|Speso|Hai speso|Hai pagato)\s+[^\d-]*([\d.,]+)\s*(?:at|a|da|presso)\s+(.+?)\s*$/im
     )
-    let raw: number | null
-    if (line) { raw = parseAmountFlexible(line[1]); out.merchant = title || line[2].trim() }
-    else { raw = firstAmount(text, /balance|saldo/i); out.merchant = title || null }
-    if (raw != null) { out.amount = Math.round((raw / 2) * 100) / 100; out.halved = true }
+    if (atLine) {
+      raw = parseAmountFlexible(atLine[1])
+      out.merchant = titleMerchant || atLine[2].trim()
+    } else {
+      const spent =
+        text.match(/(?:€|\$|£)\s*([\d.,]+)\s*(?:spent|speso|paid|pagat\w*)/i) ||
+        text.match(/([\d.,]+)\s*(?:€|\$|£)?\s*(?:spent|speso)/i) ||
+        text.match(/(?:spent|speso|paid|pagat\w*)\s*(?:€|\$|£)?\s*([\d.,]+)/i)
+      if (spent) raw = parseAmountFlexible(spent[1])
+    }
+    if (raw != null) { out.amount = Math.round((raw / 2) * 100) / 100; out.halved = true; out.isPayment = true }
     Object.assign(out, guessCategory(out.merchant))
     return out
   }
 
   out.amount = firstAmount(text)
   out.merchant = title || null
+  out.isPayment = out.amount != null
   Object.assign(out, guessCategory(out.merchant))
   return out
 }

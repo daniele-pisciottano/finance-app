@@ -91,6 +91,10 @@ export interface Transaction {
   draft?: boolean
   source?: 'intesa' | 'revolut' | 'paypal' | 'manual' | 'unknown'
   possibleDuplicate?: boolean
+  // Raw merchant name from the notification/report, preserved even if the user edits
+  // the description — used by the "intelligent history" to remember category/description
+  // for the same place next time.
+  capturedMerchant?: string
   createdAt: number
   updatedAt: number
 }

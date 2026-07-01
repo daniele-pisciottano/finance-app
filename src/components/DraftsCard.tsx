@@ -27,8 +27,17 @@ interface DraftsCardProps {
 }
 
 export function DraftsCard({ onEdit }: DraftsCardProps) {
-  const { getDrafts, confirmDraft, deleteTransaction, addDraftFromText, transactions } = useStore()
+  const { getDrafts, confirmDraft, deleteTransaction, addDraftFromText, transactions, getMerchantMemory } = useStore()
   const drafts = getDrafts()
+
+  // Effective category = the draft's own, or the one remembered for this place.
+  const effectiveCategory = (d: Transaction) => {
+    if (d.primaryCategory) return { primaryCategory: d.primaryCategory, secondaryCategory: d.secondaryCategory }
+    const mem = d.capturedMerchant ? getMerchantMemory(d.capturedMerchant) : null
+    return mem?.primaryCategory
+      ? { primaryCategory: mem.primaryCategory, secondaryCategory: mem.secondaryCategory }
+      : null
+  }
 
   // A draft looks like a duplicate if a confirmed expense with the same amount exists
   // within ±3 days (e.g. a PayPal charge later re-billed by Intesa).
@@ -47,6 +56,10 @@ export function DraftsCard({ onEdit }: DraftsCardProps) {
   const handleCreate = async () => {
     if (!text.trim()) return
     const res = await addDraftFromText(text.trim(), { appHint: app === 'auto' ? undefined : app })
+    if (!res.ok) {
+      setFeedback('Non sembra una notifica di pagamento: ignorata.')
+      return
+    }
     setText('')
     setFeedback(
       res.amount != null
@@ -77,18 +90,24 @@ export function DraftsCard({ onEdit }: DraftsCardProps) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
-        {drafts.map((d) => (
+        {drafts.map((d) => {
+          const eff = effectiveCategory(d)
+          const remembered = !d.primaryCategory && !!eff // filled from history, not the draft itself
+          return (
           <div key={d.id} className="border rounded-lg p-3">
             <div className="flex items-center gap-3">
               <span className="text-xl shrink-0">
-                {d.primaryCategory ? CATEGORY_ICONS[d.primaryCategory] : '❓'}
+                {eff ? CATEGORY_ICONS[eff.primaryCategory] : '❓'}
               </span>
               <div className="flex-1 min-w-0">
                 <div className="font-medium truncate">{d.description || 'Spesa senza descrizione'}</div>
                 <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-1">
                   <Badge variant="outline" className="text-[10px]">{SOURCE_LABELS[d.source || 'unknown']}</Badge>
-                  {d.primaryCategory ? (
-                    <span>{d.primaryCategory}{d.secondaryCategory ? ` · ${d.secondaryCategory}` : ''}</span>
+                  {eff ? (
+                    <span>
+                      {eff.primaryCategory}{eff.secondaryCategory ? ` · ${eff.secondaryCategory}` : ''}
+                      {remembered && <span className="text-primary"> · ricordata</span>}
+                    </span>
                   ) : (
                     <span className="text-warning">categoria da scegliere</span>
                   )}
@@ -115,8 +134,8 @@ export function DraftsCard({ onEdit }: DraftsCardProps) {
                 variant="ghost"
                 className="text-success hover:text-success hover:bg-success/10"
                 onClick={() => confirmDraft(d.id)}
-                disabled={!d.primaryCategory || d.amount <= 0}
-                title={!d.primaryCategory ? 'Scegli prima una categoria' : 'Conferma'}
+                disabled={!eff || d.amount <= 0}
+                title={!eff ? 'Scegli prima una categoria' : 'Conferma'}
               >
                 <Check className="h-4 w-4 mr-1" /> Conferma
               </Button>
@@ -130,7 +149,8 @@ export function DraftsCard({ onEdit }: DraftsCardProps) {
               </Button>
             </div>
           </div>
-        ))}
+          )
+        })}
 
         {/* Manual paste box */}
         {showAdd ? (

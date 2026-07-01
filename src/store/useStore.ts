@@ -19,6 +19,17 @@ function nextMonth(month: string): string {
 // caller) can't run the migration / recurring generation twice in parallel.
 let initInFlight = false
 
+// Normalize a merchant name for the "intelligent history" lookup (case/space
+// insensitive; drops trailing store codes / long digit runs that vary per visit).
+function normalizeMerchant(m: string): string {
+  return m
+    .toLowerCase()
+    .replace(/\b[a-z0-9]*\d{3,}[a-z0-9]*\b/gi, ' ') // drop codes like "br4an56i5", "0759"
+    .replace(/[^a-z0-9]+/gi, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+
 interface FinanceState {
   // Data
   transactions: Transaction[]
@@ -45,8 +56,10 @@ interface FinanceState {
 
   // Draft (auto-capture) actions
   getDrafts: () => Transaction[]
-  addDraftFromText: (text: string, opts?: { title?: string; appHint?: string }) => Promise<{ ok: boolean; amount: number | null }>
+  addDraftFromText: (text: string, opts?: { title?: string; appHint?: string }) => Promise<{ ok: boolean; amount: number | null; reason?: string }>
   confirmDraft: (id: string) => Promise<void>
+  // "Intelligent history": recall the category/description last used for a merchant.
+  getMerchantMemory: (merchant: string) => { primaryCategory?: PrimaryCategory; secondaryCategory?: string; description?: string } | null
 
   // Saving goal actions
   setSavingGoal: (month: string, goal: number, categoryBudgets?: Partial<Record<PrimaryCategory, number>>) => Promise<void>
@@ -269,9 +282,31 @@ export const useStore = create<FinanceState>()(
           .sort((a, b) => b.createdAt - a.createdAt)
       },
 
+      getMerchantMemory: (merchant) => {
+        const key = normalizeMerchant(merchant)
+        if (!key) return null
+        // Most recent confirmed expense from the same place.
+        const past = get().transactions
+          .filter((t) => t.type === 'expense' && !t.draft && normalizeMerchant(t.capturedMerchant || '') === key)
+          .sort((a, b) => b.updatedAt - a.updatedAt)[0]
+        if (!past) return null
+        return {
+          primaryCategory: past.primaryCategory,
+          secondaryCategory: past.secondaryCategory,
+          description: past.description
+        }
+      },
+
       addDraftFromText: async (text, opts = {}) => {
         const parsed = parseNotification(text, { title: opts.title, appHint: opts.appHint })
+
+        // Only real payment notifications become drafts (filters Revolut rewards etc.).
+        if (!parsed.isPayment) {
+          return { ok: false, amount: null, reason: 'not-payment' }
+        }
+
         const amount = parsed.amount != null && parsed.amount > 0 ? parsed.amount : null
+        const merchant = parsed.merchant || ''
 
         // Possible-duplicate check: an expense with the same amount within ±3 days
         // (e.g. a PayPal charge later re-billed by Intesa).
@@ -286,17 +321,21 @@ export const useStore = create<FinanceState>()(
           within3Days(t.date)
         )
 
+        // Intelligent history: reuse the category/description last used for this place.
+        const memory = merchant ? get().getMerchantMemory(merchant) : null
+
         const draft: Transaction = {
           id: generateId(),
           type: 'expense',
           date: format(today, 'yyyy-MM-dd'), // receipt date; parsed date can be ambiguous
           amount: amount ?? 0,
-          primaryCategory: parsed.guess?.primaryCategory as PrimaryCategory | undefined,
-          secondaryCategory: parsed.guess?.secondaryCategory,
-          description: parsed.merchant || '',
+          primaryCategory: (memory?.primaryCategory ?? parsed.guess?.primaryCategory) as PrimaryCategory | undefined,
+          secondaryCategory: memory?.secondaryCategory ?? parsed.guess?.secondaryCategory,
+          description: memory?.description || merchant,
           draft: true,
           source: parsed.source,
           possibleDuplicate,
+          capturedMerchant: merchant || undefined,
           createdAt: Date.now(),
           updatedAt: Date.now()
         }
@@ -312,7 +351,20 @@ export const useStore = create<FinanceState>()(
       },
 
       confirmDraft: async (id) => {
-        await get().updateTransaction(id, { draft: false, possibleDuplicate: false })
+        // If the draft still has no category, try the intelligent history one last time.
+        const draft = get().transactions.find((t) => t.id === id)
+        const updates: Partial<Transaction> = { draft: false, possibleDuplicate: false }
+        if (draft && !draft.primaryCategory && draft.capturedMerchant) {
+          const memory = get().getMerchantMemory(draft.capturedMerchant)
+          if (memory?.primaryCategory) {
+            updates.primaryCategory = memory.primaryCategory
+            updates.secondaryCategory = memory.secondaryCategory
+            if (memory.description && (!draft.description || draft.description === draft.capturedMerchant)) {
+              updates.description = memory.description
+            }
+          }
+        }
+        await get().updateTransaction(id, updates)
       },
 
       setSavingGoal: async (month, goal, categoryBudgets) => {

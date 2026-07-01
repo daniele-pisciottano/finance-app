@@ -29,7 +29,7 @@ interface TransactionFormProps {
 }
 
 export function TransactionForm({ open, onOpenChange, editTransaction }: TransactionFormProps) {
-  const { addTransaction, updateTransaction, settings, getSubcategories } = useStore()
+  const { addTransaction, updateTransaction, settings, getSubcategories, getMerchantMemory } = useStore()
   const isEditing = !!editTransaction
   const [type, setType] = useState<'expense' | 'income'>('expense')
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'))
@@ -52,14 +52,19 @@ export function TransactionForm({ open, onOpenChange, editTransaction }: Transac
   useEffect(() => {
     if (open) {
       if (editTransaction) {
+        // For a captured draft, let the "intelligent history" pre-fill category and
+        // description from the last time this place was recorded.
+        const memory = editTransaction.draft && editTransaction.capturedMerchant
+          ? getMerchantMemory(editTransaction.capturedMerchant)
+          : null
         setType(editTransaction.type)
         setDate(editTransaction.date)
         setAmount(String(editTransaction.amount))
-        setPrimaryCategory(editTransaction.primaryCategory || '')
-        setSecondaryCategory(editTransaction.secondaryCategory || '')
+        setPrimaryCategory((memory?.primaryCategory || editTransaction.primaryCategory || '') as PrimaryCategory | '')
+        setSecondaryCategory(memory?.secondaryCategory || editTransaction.secondaryCategory || '')
         setNewSubcategory('')
         setShowNewSubcategory(false)
-        setDescription(editTransaction.description || '')
+        setDescription(memory?.description || editTransaction.description || '')
         setIncomeType(editTransaction.incomeType || '')
         setIsRecurring(editTransaction.isRecurring || false)
       } else {

@@ -19,6 +19,7 @@ import { PRIMARY_CATEGORIES, CATEGORY_ICONS, type PrimaryCategory, type Transact
 import { dbOperations } from '@/lib/db'
 import { RecurringRulesManager } from '@/components/RecurringRulesManager'
 import { SyncAccount } from '@/components/SyncAccount'
+import { Reconciliation } from '@/components/Reconciliation'
 
 // Generate list of months for selection (current year and previous year)
 function generateMonthOptions(): { value: string; label: string }[] {
@@ -426,6 +427,9 @@ export function Settings() {
 
       {/* Recurring expenses */}
       <RecurringRulesManager />
+
+      {/* Reconciliation: upload bank reports and find forgotten expenses */}
+      <Reconciliation />
 
       {/* Import/Export */}
       <Card>

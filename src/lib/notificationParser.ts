@@ -7,6 +7,7 @@ export type PaymentSource = 'intesa' | 'revolut' | 'paypal' | 'unknown'
 
 export interface ParsedExpense {
   source: PaymentSource
+  isPayment: boolean // false for non-payment notifications (rewards, referrals, alerts...)
   amount: number | null // final amount to record (Revolut already halved)
   rawAmount: number | null // amount as read from the text, before adjustments
   currency: string
@@ -18,6 +19,12 @@ export interface ParsedExpense {
   guess: { primaryCategory: string; secondaryCategory?: string } | null
   note: string | null
   raw: string
+}
+
+// "Joint · Tenuterrico" -> "Tenuterrico" ; "KFC" -> "KFC". Strips a Revolut account
+// name prefix ("Joint ·", "Current ·", "Personal ·") from the notification title.
+export function cleanMerchantTitle(title: string): string {
+  return title.replace(/^\s*(?:joint|current|personal|conto\w*)\s*[·•|:-]\s*/i, '').trim()
 }
 
 // "1.234,56" -> 1234.56 ; "1,99" -> 1.99 ; "14,00" -> 14  (Italian convention)
@@ -124,6 +131,7 @@ export function parseNotification(text: string, options: ParseOptions = {}): Par
 
   const base: ParsedExpense = {
     source,
+    isPayment: false,
     amount: null,
     rawAmount: null,
     currency: 'EUR',
@@ -151,8 +159,9 @@ export function parseNotification(text: string, options: ParseOptions = {}): Par
       base.time = m[5]
       base.merchant = m[6].trim()
       base.guess = guessCategory(base.merchant)
-      return base
+      base.isPayment = amount != null
     }
+    return base // no match -> not a payment (e.g. login alert)
   }
 
   if (source === 'paypal') {
@@ -166,38 +175,52 @@ export function parseNotification(text: string, options: ParseOptions = {}): Par
       base.rawAmount = base.amount = firstAmount(text)
       base.merchant = options.title || null
     }
+    base.isPayment = base.amount != null
     base.guess = guessCategory(base.merchant)
-    base.note = 'PayPal: verifica il possibile riaddebito su Intesa (evita il doppione)'
+    if (base.isPayment) base.note = 'PayPal: verifica il possibile riaddebito su Intesa (evita il doppione)'
     return base
   }
 
   if (source === 'revolut') {
-    // Body like "Paid $2 at KFC" / "Pagato 12,50 € a Esselunga". The merchant is
-    // usually also the notification title. Ignore the "Balance/Saldo" line.
-    const line = text.match(
+    // Real formats:
+    //   "Paid $2 at KFC"                (merchant in the "at ..." part or the title)
+    //   title "Joint · Tenuterrico" + body "€5 spent" / "EUR balance: €224.70"
+    // Only treat as a payment if a spend keyword + amount are present (this filters
+    // out reward / referral / info notifications).
+    const titleMerchant = cleanMerchantTitle(options.title || '')
+    let raw: number | null = null
+    let merchant: string | null = titleMerchant || null
+
+    const atLine = text.match(
       /(?:Paid|Spent|Pagato|Speso|Hai speso|Hai pagato)\s+[^\d-]*([\d.,]+)\s*(?:at|a|da|presso)\s+(.+?)\s*$/im
     )
-    let raw: number | null
-    if (line) {
-      raw = parseAmountFlexible(line[1])
-      base.merchant = options.title || line[2].trim()
+    if (atLine) {
+      raw = parseAmountFlexible(atLine[1])
+      merchant = titleMerchant || atLine[2].trim()
     } else {
-      raw = firstAmount(text, /balance|saldo/i)
-      base.merchant = options.title || null
+      const spent =
+        text.match(/(?:€|\$|£)\s*([\d.,]+)\s*(?:spent|speso|paid|pagat\w*)/i) ||
+        text.match(/([\d.,]+)\s*(?:€|\$|£)?\s*(?:spent|speso)/i) ||
+        text.match(/(?:spent|speso|paid|pagat\w*)\s*(?:€|\$|£)?\s*([\d.,]+)/i)
+      if (spent) raw = parseAmountFlexible(spent[1])
     }
+
     base.rawAmount = raw
+    base.merchant = merchant
     if (raw != null) {
       base.amount = Math.round((raw / 2) * 100) / 100 // joint account: record your 50%
       base.halved = true
+      base.isPayment = true
       base.note = `Revolut (conto cointestato): quota 50% di ${raw.toFixed(2)}`
     }
-    base.guess = guessCategory(base.merchant)
-    return base
+    base.guess = guessCategory(merchant)
+    return base // if no amount -> isPayment stays false, caller skips
   }
 
   // Unknown source: best-effort amount + title as merchant.
   base.rawAmount = base.amount = firstAmount(text)
   base.merchant = options.title || null
+  base.isPayment = base.amount != null
   base.guess = guessCategory(base.merchant)
   return base
 }
