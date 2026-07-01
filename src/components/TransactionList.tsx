@@ -189,7 +189,7 @@ function TransactionItem({ transaction, expanded, onToggle, onDelete, onEdit }: 
                 <span>{transaction.secondaryCategory}</span>
               </>
             )}
-            {transaction.isRecurring && (
+            {(transaction.isRecurring || transaction.recurringRuleId) && (
               <>
                 <span>•</span>
                 <span className="flex items-center gap-0.5 text-primary">

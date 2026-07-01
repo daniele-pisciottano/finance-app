@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from 'dexie'
-import type { Transaction, SavingGoal, UserSettings } from '@/types'
+import type { Transaction, SavingGoal, UserSettings, RecurringRule } from '@/types'
 import { DEFAULT_SUBCATEGORIES, type PrimaryCategory } from '@/types'
 
 // Define the database
@@ -7,12 +7,21 @@ const db = new Dexie('FinanceTrackerDB') as Dexie & {
   transactions: EntityTable<Transaction, 'id'>
   savingGoals: EntityTable<SavingGoal, 'id'>
   settings: EntityTable<UserSettings & { id: string }, 'id'>
+  recurringRules: EntityTable<RecurringRule, 'id'>
 }
 
 db.version(1).stores({
   transactions: 'id, type, date, primaryCategory, secondaryCategory, incomeType, createdAt',
   savingGoals: 'id, month',
   settings: 'id'
+})
+
+// v2: add recurring rules + index the recurringRuleId on transactions
+db.version(2).stores({
+  transactions: 'id, type, date, primaryCategory, secondaryCategory, incomeType, createdAt, recurringRuleId',
+  savingGoals: 'id, month',
+  settings: 'id',
+  recurringRules: 'id, active, startMonth'
 })
 
 // Default settings
@@ -67,6 +76,23 @@ export const dbOperations = {
 
   async getRecentTransactions(limit = 10): Promise<Transaction[]> {
     return db.transactions.orderBy('createdAt').reverse().limit(limit).toArray()
+  },
+
+  // Recurring rules
+  async getAllRecurringRules(): Promise<RecurringRule[]> {
+    return db.recurringRules.toArray()
+  },
+
+  async addRecurringRule(rule: RecurringRule): Promise<string> {
+    return db.recurringRules.add(rule)
+  },
+
+  async updateRecurringRule(id: string, updates: Partial<RecurringRule>): Promise<number> {
+    return db.recurringRules.update(id, { ...updates, updatedAt: Date.now() })
+  },
+
+  async deleteRecurringRule(id: string): Promise<void> {
+    return db.recurringRules.delete(id)
   },
 
   // Saving Goals
@@ -125,6 +151,7 @@ export const dbOperations = {
     await db.transactions.clear()
     await db.savingGoals.clear()
     await db.settings.clear()
+    await db.recurringRules.clear()
   },
 
   // Export all data
@@ -132,11 +159,13 @@ export const dbOperations = {
     transactions: Transaction[]
     savingGoals: SavingGoal[]
     settings: UserSettings
+    recurringRules: RecurringRule[]
   }> {
     return {
       transactions: await this.getAllTransactions(),
       savingGoals: await this.getAllSavingGoals(),
-      settings: await this.getSettings()
+      settings: await this.getSettings(),
+      recurringRules: await this.getAllRecurringRules()
     }
   }
 }

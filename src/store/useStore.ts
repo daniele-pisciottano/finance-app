@@ -1,15 +1,27 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Transaction, SavingGoal, UserSettings, PrimaryCategory, MonthlyStats, Alert } from '@/types'
+import type { Transaction, SavingGoal, UserSettings, PrimaryCategory, MonthlyStats, Alert, RecurringRule } from '@/types'
 import { DEFAULT_SUBCATEGORIES, CATEGORY_COLORS } from '@/types'
 import { dbOperations } from '@/lib/db'
 import { generateId } from '@/lib/utils'
+import { planRecurringSync } from '@/lib/recurring'
 import { format, subMonths, startOfMonth } from 'date-fns'
+
+// Next month (YYYY-MM) after a given YYYY-MM string.
+function nextMonth(month: string): string {
+  const [y, m] = month.split('-').map(Number)
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`
+}
+
+// Synchronous guard so React StrictMode's double-invocation (or any concurrent
+// caller) can't run the migration / recurring generation twice in parallel.
+let initInFlight = false
 
 interface FinanceState {
   // Data
   transactions: Transaction[]
   savingGoals: SavingGoal[]
+  recurringRules: RecurringRule[]
   settings: UserSettings
   isLoading: boolean
   initialized: boolean
@@ -34,6 +46,12 @@ interface FinanceState {
   // Settings actions
   updateSettings: (updates: Partial<UserSettings>) => Promise<void>
   addSubcategory: (category: PrimaryCategory, subcategory: string) => Promise<void>
+  getSubcategories: (category: PrimaryCategory) => string[]
+
+  // Recurring rule actions
+  addRecurringRule: (rule: Omit<RecurringRule, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>
+  updateRecurringRule: (id: string, updates: Partial<RecurringRule>) => Promise<void>
+  deleteRecurringRule: (id: string, deleteInstances?: boolean) => Promise<void>
 
   // Computed getters
   getMonthlyStats: (month: string) => MonthlyStats
@@ -53,6 +71,7 @@ export const useStore = create<FinanceState>()(
     (set, get) => ({
       transactions: [],
       savingGoals: [],
+      recurringRules: [],
       settings: {
         darkMode: false,
         currency: 'EUR',
@@ -65,53 +84,76 @@ export const useStore = create<FinanceState>()(
       activeTab: 'dashboard',
 
       initialize: async () => {
-        if (get().initialized) return
+        if (get().initialized || initInFlight) return
+        initInFlight = true
 
         set({ isLoading: true })
         try {
-          const [transactions, savingGoals, settings] = await Promise.all([
+          const [transactions, savingGoals, settings, loadedRules] = await Promise.all([
             dbOperations.getAllTransactions(),
             dbOperations.getAllSavingGoals(),
-            dbOperations.getSettings()
+            dbOperations.getSettings(),
+            dbOperations.getAllRecurringRules()
           ])
 
-          // Apply recurring transactions for the current month
           const currentMonth = format(new Date(), 'yyyy-MM')
-          const recurringTransactions = transactions.filter(t => t.isRecurring)
-          const newRecurring: Transaction[] = []
+          const workingTransactions = [...transactions]
+          const rules = [...loadedRules]
 
-          for (const recurring of recurringTransactions) {
-            // Check if a copy already exists for this month
-            const alreadyExists = transactions.some(t =>
-              !t.isRecurring &&
-              t.date.startsWith(currentMonth) &&
-              t.amount === recurring.amount &&
-              t.primaryCategory === recurring.primaryCategory &&
-              t.secondaryCategory === recurring.secondaryCategory &&
-              t.description === recurring.description
-            )
-
-            if (!alreadyExists) {
-              const newTransaction: Transaction = {
-                ...recurring,
-                id: generateId(),
-                date: `${currentMonth}-01`,
-                isRecurring: false,
-                createdAt: Date.now(),
-                updatedAt: Date.now()
-              }
-              await dbOperations.addTransaction(newTransaction)
-              newRecurring.push(newTransaction)
+          // --- One-time migration: convert legacy isRecurring transactions into rules ---
+          // Each legacy template becomes a rule starting the month AFTER its own month
+          // (its own month already contains the template as a real expense). Later months'
+          // old auto-generated copies get adopted by planRecurringSync (content match).
+          const legacyTemplates = workingTransactions.filter(t => t.isRecurring)
+          for (const template of legacyTemplates) {
+            const [, , dayStr] = template.date.split('-')
+            const newRule: RecurringRule = {
+              id: generateId(),
+              amount: template.amount,
+              primaryCategory: template.primaryCategory!,
+              secondaryCategory: template.secondaryCategory,
+              description: template.description,
+              dayOfMonth: parseInt(dayStr, 10) || 1,
+              active: true,
+              // Start from the current month so migration never invents past history:
+              // existing past copies stay as-is, and instances are generated going forward.
+              startMonth: currentMonth,
+              createdAt: Date.now(),
+              updatedAt: Date.now()
             }
+            await dbOperations.addRecurringRule(newRule)
+            rules.push(newRule)
+
+            // Clear the legacy flag so the template becomes a normal expense.
+            await dbOperations.updateTransaction(template.id, { isRecurring: false })
+            const idx = workingTransactions.findIndex(t => t.id === template.id)
+            if (idx >= 0) workingTransactions[idx] = { ...workingTransactions[idx], isRecurring: false }
           }
 
-          const allTransactions = [...newRecurring, ...transactions].sort(
+          // --- Generate any missing recurring instances up to the current month ---
+          const { toAdd, toLink } = planRecurringSync(rules, workingTransactions, currentMonth)
+
+          for (const t of toAdd) {
+            await dbOperations.addTransaction(t)
+          }
+          for (const link of toLink) {
+            await dbOperations.updateTransaction(link.id, { recurringRuleId: link.recurringRuleId })
+          }
+
+          // Apply the links to the in-memory copies
+          const linkMap = new Map(toLink.map(l => [l.id, l.recurringRuleId]))
+          const merged = workingTransactions.map(t =>
+            linkMap.has(t.id) ? { ...t, recurringRuleId: linkMap.get(t.id) } : t
+          )
+
+          const allTransactions = [...toAdd, ...merged].sort(
             (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
           )
 
           set({
             transactions: allTransactions,
             savingGoals,
+            recurringRules: rules,
             settings,
             initialized: true,
             isLoading: false
@@ -119,6 +161,8 @@ export const useStore = create<FinanceState>()(
         } catch (error) {
           console.error('Failed to initialize store:', error)
           set({ isLoading: false, initialized: true })
+        } finally {
+          initInFlight = false
         }
       },
 
@@ -126,8 +170,13 @@ export const useStore = create<FinanceState>()(
       setActiveTab: (tab) => set({ activeTab: tab }),
 
       addTransaction: async (transactionData) => {
+        const makeRecurring = transactionData.type === 'expense' && !!transactionData.isRecurring
+
+        // The stored transaction is always a normal (non-recurring) expense for its
+        // own month; recurrence is handled by a separate rule for the following months.
         const transaction: Transaction = {
           ...transactionData,
+          isRecurring: false,
           id: generateId(),
           createdAt: Date.now(),
           updatedAt: Date.now()
@@ -149,6 +198,20 @@ export const useStore = create<FinanceState>()(
             (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
           )
         }))
+
+        // Create a recurring rule for the months that follow this one.
+        if (makeRecurring && transaction.primaryCategory) {
+          const [, , dayStr] = transaction.date.split('-')
+          await get().addRecurringRule({
+            amount: transaction.amount,
+            primaryCategory: transaction.primaryCategory,
+            secondaryCategory: transaction.secondaryCategory,
+            description: transaction.description,
+            dayOfMonth: parseInt(dayStr, 10) || 1,
+            active: true,
+            startMonth: nextMonth(transaction.date.slice(0, 7))
+          })
+        }
       },
 
       updateTransaction: async (id, updates) => {
@@ -205,6 +268,79 @@ export const useStore = create<FinanceState>()(
             }
           }
         }))
+      },
+
+      // Union of default + custom + every subcategory ever used in a transaction,
+      // so any subcategory (typed in the form, imported from CSV, ...) always stays
+      // available for future entries.
+      getSubcategories: (category) => {
+        const { settings, transactions } = get()
+        const fromSettings = settings.customSubcategories[category] || []
+        const fromHistory = transactions
+          .filter((t) => t.type === 'expense' && t.primaryCategory === category && t.secondaryCategory)
+          .map((t) => t.secondaryCategory as string)
+        return [...new Set([...fromSettings, ...fromHistory])]
+      },
+
+      addRecurringRule: async (ruleData) => {
+        const rule: RecurringRule = {
+          ...ruleData,
+          id: generateId(),
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        }
+        await dbOperations.addRecurringRule(rule)
+
+        // Immediately generate any due instances (e.g. current + missed months).
+        const currentMonth = format(new Date(), 'yyyy-MM')
+        const { transactions } = get()
+        const { toAdd } = planRecurringSync([rule], transactions, currentMonth)
+        for (const t of toAdd) {
+          await dbOperations.addTransaction(t)
+        }
+
+        set((state) => ({
+          recurringRules: [...state.recurringRules, rule],
+          transactions: [...toAdd, ...state.transactions].sort(
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+          )
+        }))
+      },
+
+      updateRecurringRule: async (id, updates) => {
+        await dbOperations.updateRecurringRule(id, updates)
+        set((state) => ({
+          recurringRules: state.recurringRules.map((r) =>
+            r.id === id ? { ...r, ...updates, updatedAt: Date.now() } : r
+          )
+        }))
+      },
+
+      deleteRecurringRule: async (id, deleteInstances = false) => {
+        await dbOperations.deleteRecurringRule(id)
+
+        if (deleteInstances) {
+          const toDelete = get().transactions.filter((t) => t.recurringRuleId === id)
+          for (const t of toDelete) {
+            await dbOperations.deleteTransaction(t.id)
+          }
+          set((state) => ({
+            recurringRules: state.recurringRules.filter((r) => r.id !== id),
+            transactions: state.transactions.filter((t) => t.recurringRuleId !== id)
+          }))
+        } else {
+          // Keep already-generated expenses, just unlink them from the (now gone) rule.
+          const toUnlink = get().transactions.filter((t) => t.recurringRuleId === id)
+          for (const t of toUnlink) {
+            await dbOperations.updateTransaction(t.id, { recurringRuleId: undefined })
+          }
+          set((state) => ({
+            recurringRules: state.recurringRules.filter((r) => r.id !== id),
+            transactions: state.transactions.map((t) =>
+              t.recurringRuleId === id ? { ...t, recurringRuleId: undefined } : t
+            )
+          }))
+        }
       },
 
       getMonthlyStats: (month) => {

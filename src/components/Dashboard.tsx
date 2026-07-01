@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { getDaysInMonth, getDate } from 'date-fns'
+import { getDaysInMonth, getDate, format } from 'date-fns'
 import { TrendingUp, TrendingDown, Target, AlertTriangle, CheckCircle, Info, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
@@ -51,24 +51,56 @@ export function Dashboard({ onEditTransaction }: DashboardProps) {
     }
   }, [currentStats, previousStats])
 
-  // Saving goal progress
+  // Saving goal progress (income = only income actually recorded this month)
   const savingProgress = useMemo(() => {
-    const progress = savingGoalAmount > 0
-      ? Math.min((currentStats.savings / savingGoalAmount) * 100, 100)
-      : 0
-    const remaining = savingGoalAmount - currentStats.savings
+    const goal = savingGoalAmount
+    const income = currentStats.totalIncome
+    const savings = currentStats.savings // income - expenses
 
+    const progress = goal > 0
+      ? Math.max(Math.min((savings / goal) * 100, 100), 0)
+      : 0
+
+    // How much you can still spend this month and hit the goal. Negative => over budget.
+    const spendableRemaining = savings - goal
+    const stillToSave = goal - savings // positive => behind
+
+    const nowMonth = format(new Date(), 'yyyy-MM')
+    const isCurrentMonth = currentMonth === nowMonth
     const [year, month] = currentMonth.split('-').map(Number)
     const daysInMonth = getDaysInMonth(new Date(year, month - 1))
     const currentDay = getDate(new Date())
-    const daysRemaining = Math.max(daysInMonth - currentDay, 0)
+    // Today counts as a spendable day.
+    const daysRemaining = isCurrentMonth ? Math.max(daysInMonth - currentDay + 1, 0) : 0
 
-    const dailyBudget = daysRemaining > 0 && remaining > 0
-      ? remaining / daysRemaining
+    const dailyBudget = isCurrentMonth && daysRemaining > 0 && spendableRemaining > 0
+      ? spendableRemaining / daysRemaining
       : 0
 
-    return { progress, remaining, daysRemaining, dailyBudget }
-  }, [currentStats.savings, savingGoalAmount, currentMonth])
+    // Determine the state for messaging.
+    // spendableRemaining >= 0  => you currently meet the goal and still have room to
+    //                             spend `spendableRemaining` before dropping below it.
+    // spendableRemaining < 0   => you are below the goal; since spending only lowers
+    //                             savings, it's unreachable without more income.
+    let state: 'onTrack' | 'reached' | 'noIncome' | 'behind'
+    if (isCurrentMonth && income <= 0 && goal > 0) {
+      state = 'noIncome'
+    } else if (spendableRemaining >= 0) {
+      state = isCurrentMonth ? 'onTrack' : 'reached'
+    } else {
+      state = 'behind'
+    }
+
+    return {
+      progress,
+      spendableRemaining,
+      stillToSave,
+      daysRemaining,
+      dailyBudget,
+      isCurrentMonth,
+      state
+    }
+  }, [currentStats.savings, currentStats.totalIncome, savingGoalAmount, currentMonth])
 
   // Navigate months
   const navigateMonth = (direction: 'prev' | 'next') => {
@@ -197,7 +229,13 @@ export function Dashboard({ onEditTransaction }: DashboardProps) {
             <span className="text-muted-foreground">
               Target: {formatCurrency(savingGoalAmount)}/mese
             </span>
-            <span className={currentStats.savings >= savingGoalAmount ? 'text-success font-medium' : ''}>
+            <span className={
+              savingProgress.state === 'reached' || savingProgress.state === 'onTrack'
+                ? 'text-success font-medium'
+                : savingProgress.state === 'behind'
+                  ? 'text-destructive font-medium'
+                  : ''
+            }>
               {savingProgress.progress.toFixed(1)}%
             </span>
           </div>
@@ -205,31 +243,50 @@ export function Dashboard({ onEditTransaction }: DashboardProps) {
             value={savingProgress.progress}
             className="h-2"
             indicatorClassName={
-              savingProgress.progress >= 100
+              savingProgress.state === 'reached' || savingProgress.state === 'onTrack'
                 ? 'bg-success'
-                : savingProgress.progress >= 50
-                  ? 'bg-primary'
+                : savingProgress.state === 'behind'
+                  ? 'bg-destructive'
                   : 'bg-warning'
             }
           />
-          <div className="text-sm text-muted-foreground">
-            {savingProgress.remaining > 0 ? (
-              <>
-                Mancano <span className="font-medium text-foreground">{formatCurrency(savingProgress.remaining)}</span>
-                {savingProgress.daysRemaining > 0 && (
-                  <> in {savingProgress.daysRemaining} giorni</>
-                )}
-              </>
-            ) : (
-              <span className="text-success flex items-center gap-1">
-                <CheckCircle className="h-4 w-4" />
-                Obiettivo raggiunto! +{formatCurrency(Math.abs(savingProgress.remaining))}
+
+          {/* Status message per state */}
+          {savingProgress.state === 'reached' ? (
+            <div className="text-sm text-success flex items-center gap-1">
+              <CheckCircle className="h-4 w-4 shrink-0" />
+              Obiettivo raggiunto! +{formatCurrency(Math.abs(savingProgress.spendableRemaining))} oltre il target
+            </div>
+          ) : savingProgress.state === 'onTrack' ? (
+            <div className="text-sm text-muted-foreground">
+              <span className="text-success font-medium flex items-center gap-1">
+                <CheckCircle className="h-4 w-4 shrink-0" />
+                Sei in linea con l'obiettivo
               </span>
-            )}
-          </div>
-          {savingProgress.dailyBudget > 0 && savingProgress.remaining > 0 && (
-            <div className="text-xs text-muted-foreground bg-muted p-2 rounded">
-              Puoi spendere <span className="font-medium">{formatCurrency(savingProgress.dailyBudget)}/giorno</span> per raggiungere l'obiettivo
+              <span className="block mt-1">
+                Puoi ancora spendere <span className="font-medium text-foreground">{formatCurrency(savingProgress.spendableRemaining)}</span> restando nel target
+                {savingProgress.daysRemaining > 0 && (
+                  <> — circa {formatCurrency(savingProgress.dailyBudget)}/giorno per {savingProgress.daysRemaining} giorni</>
+                )}.
+              </span>
+            </div>
+          ) : savingProgress.state === 'noIncome' ? (
+            <div className="text-sm text-muted-foreground">
+              Registra le entrate del mese per calcolare quanto puoi ancora spendere.
+              <span className="block mt-1">
+                Manca <span className="font-medium text-foreground">{formatCurrency(savingProgress.stillToSave)}</span> all'obiettivo.
+              </span>
+            </div>
+          ) : (
+            // behind
+            <div className="text-sm text-destructive flex items-start gap-1">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>
+                Sei sotto l'obiettivo di <span className="font-medium">{formatCurrency(savingProgress.stillToSave)}</span>.
+                {savingProgress.isCurrentMonth
+                  ? " Con le entrate registrate non è raggiungibile senza altre entrate (o riducendo le spese)."
+                  : " Obiettivo non raggiunto per questo mese."}
+              </span>
             </div>
           )}
         </CardContent>
