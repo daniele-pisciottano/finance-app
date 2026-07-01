@@ -38,7 +38,7 @@ export function Reconciliation() {
       const buf = new Uint8Array(await file.arrayBuffer())
       const report = parseReport(buf)
       if (report.source === 'unknown' || report.transactions.length === 0) {
-        setError('Formato non riconosciuto. Usa l’export .xlsx di Revolut o Intesa Sanpaolo.')
+        setError('Formato non riconosciuto. Usa l’export .xlsx o .csv di Revolut o Intesa Sanpaolo.')
         return
       }
       const rec = reconcile(report, transactions)
@@ -105,15 +105,15 @@ export function Reconciliation() {
           Riconciliazione report
         </CardTitle>
         <CardDescription>
-          Carica l’export della banca (.xlsx di Revolut o Intesa): l’app confronta con le spese già
+          Carica l’export della banca (.xlsx o .csv di Revolut o Intesa): l’app confronta con le spese già
           inserite e ti suggerisce quelle che potresti aver dimenticato. Revolut ÷2, PayPal segnalati.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
-        <input ref={fileRef} type="file" accept=".xlsx" onChange={handleFile} className="hidden" />
+        <input ref={fileRef} type="file" accept=".xlsx,.csv,text/csv" onChange={handleFile} className="hidden" />
         <Button variant="outline" className="w-full" onClick={() => fileRef.current?.click()} disabled={loading}>
           <Upload className="h-4 w-4 mr-2" />
-          {loading ? 'Analisi in corso…' : 'Carica report (.xlsx)'}
+          {loading ? 'Analisi in corso…' : 'Carica report (.xlsx o .csv)'}
         </Button>
         {error && <p className="text-sm text-destructive">{error}</p>}
       </CardContent>

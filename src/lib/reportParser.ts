@@ -1,5 +1,65 @@
+import { strFromU8 } from 'fflate'
 import { readXlsx, excelSerialToDate, type Cell } from '@/lib/xlsx'
-import { guessCategory } from '@/lib/notificationParser'
+import { guessCategory, parseAmountFlexible } from '@/lib/notificationParser'
+
+// --- CSV support ---------------------------------------------------------
+function detectDelimiter(text: string): string {
+  const line = (text.split(/\r?\n/).find((l) => l.trim()) || '')
+  const counts: Record<string, number> = { ',': 0, ';': 0, '\t': 0 }
+  for (const d of Object.keys(counts)) counts[d] = line.split(d).length - 1
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0] || ','
+}
+
+function parseCsv(text: string): Cell[][] {
+  const delim = detectDelimiter(text)
+  const rows: Cell[][] = []
+  let field = ''
+  let row: Cell[] = []
+  let inQuotes = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++ } else inQuotes = false
+      } else field += c
+    } else if (c === '"') {
+      inQuotes = true
+    } else if (c === delim) {
+      row.push(field); field = ''
+    } else if (c === '\n') {
+      row.push(field); rows.push(row); row = []; field = ''
+    } else if (c !== '\r') {
+      field += c
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row) }
+  return rows
+}
+
+// Amount from either an xlsx number or a CSV string, preserving the sign.
+function cellToAmount(cell: Cell): number {
+  if (typeof cell === 'number') return cell
+  const s = String(cell ?? '')
+  if (!s.trim()) return NaN
+  const negative = /-/.test(s) || /^\(.*\)$/.test(s.trim())
+  const abs = parseAmountFlexible(s)
+  if (abs == null) return NaN
+  return negative ? -abs : abs
+}
+
+// Date from either an Excel serial (number) or a CSV date string.
+function cellToDate(cell: Cell): string {
+  if (typeof cell === 'number') return excelSerialToDate(cell)
+  const s = String(cell ?? '').trim()
+  if (!s) return ''
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`
+  const dmy = s.match(/^(\d{1,2})[/.](\d{1,2})[/.](\d{4})/) // DD/MM/YYYY (Italian)
+  if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`
+  const n = Number(s)
+  if (Number.isFinite(n) && n > 20000) return excelSerialToDate(n) // serial stored as text
+  return ''
+}
 
 export type ReportSource = 'revolut' | 'intesa' | 'unknown'
 
@@ -58,7 +118,9 @@ function s(cell: Cell): string {
 }
 
 export function parseReport(data: Uint8Array): ParsedReport {
-  const rows = readXlsx(data)
+  // .xlsx files are ZIP archives (start with "PK"); anything else is treated as CSV.
+  const isZip = data[0] === 0x50 && data[1] === 0x4b
+  const rows = isZip ? readXlsx(data) : parseCsv(strFromU8(data))
 
   const header0 = (rows[0] || []).map((c) => s(c).toLowerCase())
   if (header0.includes('type') && header0.includes('amount') && header0.some((h) => h.includes('description'))) {
@@ -84,15 +146,14 @@ function parseRevolut(rows: Cell[][]): ParsedReport {
   let ignored = 0
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r]
-    const amount = Number(row[iAmt])
+    const amount = cellToAmount(row[iAmt])
     if (!Number.isFinite(amount) || amount === 0) continue
     if (amount > 0) {
       ignored++ // Deposit / Top-up / refund
       continue
     }
     const merchant = s(row[iDesc])
-    const dateSerial = Number(row[iDate])
-    const date = Number.isFinite(dateSerial) ? excelSerialToDate(dateSerial) : ''
+    const date = cellToDate(row[iDate])
     const rawAmount = Math.abs(amount)
     const g = guessCategory(merchant)
     transactions.push({
@@ -122,7 +183,7 @@ function parseIntesa(rows: Cell[][], hi: number): ParsedReport {
   let ignored = 0
   for (let r = hi + 1; r < rows.length; r++) {
     const row = rows[r]
-    const amount = Number(row[iAmt])
+    const amount = cellToAmount(row[iAmt])
     if (!Number.isFinite(amount) || amount === 0) continue
     const op = s(row[iOp])
     if (!op) continue
@@ -135,7 +196,7 @@ function parseIntesa(rows: Cell[][], hi: number): ParsedReport {
       ignored++
       continue
     }
-    const date = excelSerialToDate(Number(row[iDate]))
+    const date = cellToDate(row[iDate])
     const cat = s(row[iCat])
     const dettagli = iDet >= 0 ? s(row[iDet]) : ''
     const rawAmount = Math.abs(amount)
