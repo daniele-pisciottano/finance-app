@@ -29,7 +29,7 @@ interface TransactionFormProps {
 }
 
 export function TransactionForm({ open, onOpenChange, editTransaction }: TransactionFormProps) {
-  const { addTransaction, updateTransaction, settings } = useStore()
+  const { addTransaction, updateTransaction, settings, getSubcategories } = useStore()
   const isEditing = !!editTransaction
   const [type, setType] = useState<'expense' | 'income'>('expense')
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'))
@@ -43,9 +43,9 @@ export function TransactionForm({ open, onOpenChange, editTransaction }: Transac
   const [isRecurring, setIsRecurring] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // Get subcategories for selected primary category
+  // Get subcategories for selected primary category (default + custom + history)
   const subcategories = primaryCategory
-    ? settings.customSubcategories[primaryCategory] || []
+    ? getSubcategories(primaryCategory as PrimaryCategory)
     : []
 
   // Reset form when dialog opens, or pre-populate for editing
@@ -300,24 +300,31 @@ export function TransactionForm({ open, onOpenChange, editTransaction }: Transac
               />
             </div>
 
-            {/* Recurring toggle - only for expenses */}
-            {type === 'expense' && (
-              <button
-                type="button"
-                onClick={() => setIsRecurring(!isRecurring)}
-                className={cn(
-                  "flex items-center gap-2 w-full p-3 rounded-lg border-2 transition-all text-sm",
-                  isRecurring
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-transparent bg-muted text-muted-foreground"
+            {/* Recurring toggle - only for new expenses */}
+            {type === 'expense' && !isEditing && (
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => setIsRecurring(!isRecurring)}
+                  className={cn(
+                    "flex items-center gap-2 w-full p-3 rounded-lg border-2 transition-all text-sm",
+                    isRecurring
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-transparent bg-muted text-muted-foreground"
+                  )}
+                >
+                  <Repeat className="h-4 w-4" />
+                  <span className="font-medium">Spesa ricorrente</span>
+                  <span className="text-xs ml-auto">
+                    {isRecurring ? 'Attiva' : 'Si ripete ogni mese'}
+                  </span>
+                </button>
+                {isRecurring && (
+                  <p className="text-xs text-muted-foreground px-1">
+                    Verrà aggiunta automaticamente ogni mese. Puoi gestirla o eliminarla in Impostazioni → Spese ricorrenti.
+                  </p>
                 )}
-              >
-                <Repeat className="h-4 w-4" />
-                <span className="font-medium">Spesa ricorrente</span>
-                <span className="text-xs ml-auto">
-                  {isRecurring ? 'Attiva' : 'Ogni inizio mese'}
-                </span>
-              </button>
+              </div>
             )}
 
             {/* Submit */}

@@ -84,7 +84,22 @@ export interface Transaction {
   secondaryCategory?: string
   description: string
   incomeType?: IncomeType
-  isRecurring?: boolean
+  isRecurring?: boolean // legacy flag, kept for backward compatibility / migration
+  recurringRuleId?: string // set on transactions generated from a RecurringRule
+  createdAt: number
+  updatedAt: number
+}
+
+// A recurring expense "template": generates one transaction per month.
+export interface RecurringRule {
+  id: string
+  amount: number
+  primaryCategory: PrimaryCategory
+  secondaryCategory?: string
+  description: string
+  dayOfMonth: number // 1-31, clamped to the last day of shorter months
+  active: boolean
+  startMonth: string // YYYY-MM — first month the rule applies to
   createdAt: number
   updatedAt: number
 }

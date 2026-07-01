@@ -17,6 +17,7 @@ import { useStore } from '@/store/useStore'
 import { formatCurrency, generateId } from '@/lib/utils'
 import { PRIMARY_CATEGORIES, CATEGORY_ICONS, type PrimaryCategory, type Transaction } from '@/types'
 import { dbOperations } from '@/lib/db'
+import { RecurringRulesManager } from '@/components/RecurringRulesManager'
 
 // Generate list of months for selection (current year and previous year)
 function generateMonthOptions(): { value: string; label: string }[] {
@@ -418,6 +419,9 @@ export function Settings() {
           )}
         </CardContent>
       </Card>
+
+      {/* Recurring expenses */}
+      <RecurringRulesManager />
 
       {/* Import/Export */}
       <Card>
