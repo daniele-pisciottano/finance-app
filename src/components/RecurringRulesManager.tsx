@@ -23,6 +23,65 @@ function clampDay(value: string): number {
   return Math.min(Math.max(n, 1), 31)
 }
 
+// Dropdown of subcategories for a category (default + custom + history) with a
+// "create new" option that reveals a free-text field. Mirrors the TransactionForm UX.
+function SubcategoryPicker({
+  category,
+  value,
+  onChange,
+}: {
+  category: PrimaryCategory | ''
+  value: string
+  onChange: (v: string) => void
+}) {
+  const getSubcategories = useStore((s) => s.getSubcategories)
+  const subs = category ? getSubcategories(category) : []
+  const [creating, setCreating] = useState(!!value && !subs.includes(value))
+
+  return (
+    <div className="space-y-2">
+      <Select
+        value={creating ? '__new__' : value}
+        onValueChange={(v) => {
+          if (v === '__new__') {
+            setCreating(true)
+            onChange('')
+          } else {
+            setCreating(false)
+            onChange(v)
+          }
+        }}
+        disabled={!category}
+      >
+        <SelectTrigger>
+          <SelectValue placeholder="Sottocategoria" />
+        </SelectTrigger>
+        <SelectContent>
+          {subs.map((s) => (
+            <SelectItem key={s} value={s}>
+              {s}
+            </SelectItem>
+          ))}
+          <SelectItem value="__new__">
+            <span className="flex items-center gap-2">
+              <Plus className="h-4 w-4" />
+              Crea nuova
+            </span>
+          </SelectItem>
+        </SelectContent>
+      </Select>
+      {creating && (
+        <Input
+          placeholder="Nome nuova sottocategoria"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          autoFocus
+        />
+      )}
+    </div>
+  )
+}
+
 export function RecurringRulesManager() {
   const { recurringRules, addRecurringRule, updateRecurringRule, deleteRecurringRule } = useStore()
 
@@ -34,6 +93,8 @@ export function RecurringRulesManager() {
   const [day, setDay] = useState('1')
 
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [editDesc, setEditDesc] = useState('')
+  const [editSub, setEditSub] = useState('')
   const [editAmount, setEditAmount] = useState('')
   const [editDay, setEditDay] = useState('1')
 
@@ -65,8 +126,16 @@ export function RecurringRulesManager() {
     resetAddForm()
   }
 
-  const startEdit = (id: string, currentAmount: number, currentDay: number) => {
+  const startEdit = (
+    id: string,
+    currentDesc: string,
+    currentSub: string | undefined,
+    currentAmount: number,
+    currentDay: number
+  ) => {
     setEditingId(id)
+    setEditDesc(currentDesc)
+    setEditSub(currentSub || '')
     setEditAmount(String(currentAmount))
     setEditDay(String(currentDay))
   }
@@ -74,7 +143,12 @@ export function RecurringRulesManager() {
   const saveEdit = async (id: string) => {
     const value = parseFloat(editAmount)
     if (isNaN(value) || value <= 0) return
-    await updateRecurringRule(id, { amount: value, dayOfMonth: clampDay(editDay) })
+    await updateRecurringRule(id, {
+      description: editDesc.trim(),
+      secondaryCategory: editSub.trim() || undefined,
+      amount: value,
+      dayOfMonth: clampDay(editDay)
+    })
     setEditingId(null)
   }
 
@@ -94,7 +168,7 @@ export function RecurringRulesManager() {
           Spese ricorrenti
         </CardTitle>
         <CardDescription>
-          Vengono aggiunte automaticamente ogni mese. Attiva/disattiva, modifica importo e giorno, o elimina.
+          Vengono aggiunte automaticamente ogni mese. Attiva/disattiva, modifica nome, importo, giorno e sottocategoria, o elimina.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -126,36 +200,50 @@ export function RecurringRulesManager() {
               </div>
 
               {editingId === rule.id ? (
-                <div className="flex flex-wrap items-end gap-2 mt-3">
+                <div className="space-y-2 mt-3">
                   <div className="space-y-1">
-                    <Label className="text-xs">Importo</Label>
+                    <Label className="text-xs">Nome</Label>
                     <Input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={editAmount}
-                      onChange={(e) => setEditAmount(e.target.value)}
-                      className="w-28"
-                      inputMode="decimal"
+                      placeholder="Nome (es. Affitto)"
+                      value={editDesc}
+                      onChange={(e) => setEditDesc(e.target.value)}
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-xs">Giorno</Label>
-                    <Input
-                      type="number"
-                      min="1"
-                      max="31"
-                      value={editDay}
-                      onChange={(e) => setEditDay(e.target.value)}
-                      className="w-20"
-                    />
+                    <Label className="text-xs">Sottocategoria</Label>
+                    <SubcategoryPicker category={rule.primaryCategory} value={editSub} onChange={setEditSub} />
                   </div>
-                  <Button size="sm" onClick={() => saveEdit(rule.id)}>
-                    <Check className="h-4 w-4" />
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
-                    <X className="h-4 w-4" />
-                  </Button>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Importo</Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={editAmount}
+                        onChange={(e) => setEditAmount(e.target.value)}
+                        className="w-28"
+                        inputMode="decimal"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Giorno</Label>
+                      <Input
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={editDay}
+                        onChange={(e) => setEditDay(e.target.value)}
+                        className="w-20"
+                      />
+                    </div>
+                    <Button size="sm" onClick={() => saveEdit(rule.id)}>
+                      <Check className="h-4 w-4" />
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 <div className="flex justify-end gap-1 mt-2">
@@ -169,7 +257,7 @@ export function RecurringRulesManager() {
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={() => startEdit(rule.id, rule.amount, rule.dayOfMonth)}
+                    onClick={() => startEdit(rule.id, rule.description, rule.secondaryCategory, rule.amount, rule.dayOfMonth)}
                   >
                     <Pencil className="h-4 w-4" />
                   </Button>
@@ -190,28 +278,24 @@ export function RecurringRulesManager() {
         {/* Add new rule */}
         {showAdd ? (
           <div className="border rounded-lg p-3 space-y-3">
-            <div className="flex flex-col sm:flex-row gap-2">
-              <Select value={cat} onValueChange={(v) => setCat(v as PrimaryCategory)}>
-                <SelectTrigger className="sm:w-[160px]">
-                  <SelectValue placeholder="Categoria" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PRIMARY_CATEGORIES.map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {CATEGORY_ICONS[c]} {c}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Input
-                placeholder="Sottocategoria (opz.)"
-                value={sub}
-                onChange={(e) => setSub(e.target.value)}
-                className="flex-1"
-              />
-            </div>
+            <Select value={cat} onValueChange={(v) => { setCat(v as PrimaryCategory); setSub('') }}>
+              <SelectTrigger>
+                <SelectValue placeholder="Categoria" />
+              </SelectTrigger>
+              <SelectContent>
+                {PRIMARY_CATEGORIES.map((c) => (
+                  <SelectItem key={c} value={c}>
+                    {CATEGORY_ICONS[c]} {c}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {/* Subcategory dropdown (remounts when category changes) */}
+            <SubcategoryPicker key={cat} category={cat} value={sub} onChange={setSub} />
+
             <Input
-              placeholder="Descrizione (es. Affitto)"
+              placeholder="Nome (es. Affitto)"
               value={desc}
               onChange={(e) => setDesc(e.target.value)}
             />

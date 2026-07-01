@@ -31,7 +31,8 @@ export function TransactionList({ limit, showFilters = false, onEdit }: Transact
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const filteredTransactions = useMemo(() => {
-    let result = transactions
+    // Drafts live in the "Da confermare" card, not in the normal list.
+    let result = transactions.filter(t => !t.draft)
 
     // Filter by current month if no specific filters
     if (!showFilters) {

@@ -110,7 +110,11 @@ export function TransactionForm({ open, onOpenChange, editTransaction }: Transac
       }
 
       if (isEditing) {
-        await updateTransaction(editTransaction.id, transactionData)
+        // Saving a captured draft confirms it (clears the draft flag).
+        const confirmDraft = editTransaction.draft
+          ? { draft: false, possibleDuplicate: false }
+          : {}
+        await updateTransaction(editTransaction.id, { ...transactionData, ...confirmDraft })
       } else {
         await addTransaction(transactionData)
       }
@@ -131,7 +135,18 @@ export function TransactionForm({ open, onOpenChange, editTransaction }: Transac
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle>{isEditing ? 'Modifica Transazione' : 'Nuova Transazione'}</DialogTitle>
+          <DialogTitle>
+            {editTransaction?.draft
+              ? 'Conferma spesa (bozza)'
+              : isEditing
+                ? 'Modifica Transazione'
+                : 'Nuova Transazione'}
+          </DialogTitle>
+          {editTransaction?.draft && (
+            <p className="text-sm text-muted-foreground">
+              Spesa catturata automaticamente. Controlla categoria e importo, poi salva per confermarla.
+            </p>
+          )}
         </DialogHeader>
 
         <Tabs value={type} onValueChange={(v) => setType(v as 'expense' | 'income')}>

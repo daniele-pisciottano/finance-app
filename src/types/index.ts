@@ -86,6 +86,11 @@ export interface Transaction {
   incomeType?: IncomeType
   isRecurring?: boolean // legacy flag, kept for backward compatibility / migration
   recurringRuleId?: string // set on transactions generated from a RecurringRule
+  // Auto-capture (Phase 3): a captured-but-unconfirmed expense. Drafts are excluded
+  // from stats and CSV export until confirmed.
+  draft?: boolean
+  source?: 'intesa' | 'revolut' | 'paypal' | 'manual' | 'unknown'
+  possibleDuplicate?: boolean
   createdAt: number
   updatedAt: number
 }
