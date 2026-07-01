@@ -12,6 +12,14 @@ dist
 dist-ssr
 *.local
 
+# Environment (secrets) — keep .env.example tracked
+.env
+.env.*
+!.env.example
+
+# Claude local settings
+.claude/settings.local.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

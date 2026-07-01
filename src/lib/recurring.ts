@@ -1,5 +1,11 @@
 import type { RecurringRule, Transaction } from '@/types'
-import { generateId } from '@/lib/utils'
+
+// Deterministic id for a generated instance so that two devices generating the same
+// (rule, month) produce the SAME id — sync then dedups them by primary key instead
+// of creating cross-device duplicates.
+export function recurringInstanceId(ruleId: string, month: string): string {
+  return `${ruleId}__${month}`
+}
 
 // Inclusive list of 'YYYY-MM' between two months (max 60 to avoid runaway backfills).
 export function enumerateMonths(startMonth: string, endMonth: string): string[] {
@@ -87,9 +93,9 @@ export function planRecurringSync(
         continue
       }
 
-      // Otherwise create a fresh instance for that month.
+      // Otherwise create a fresh instance for that month (deterministic id).
       toAdd.push({
-        id: generateId(),
+        id: recurringInstanceId(rule.id, month),
         type: 'expense',
         date: buildRecurringDate(month, rule.dayOfMonth),
         amount: rule.amount,

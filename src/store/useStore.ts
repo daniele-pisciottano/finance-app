@@ -5,6 +5,7 @@ import { DEFAULT_SUBCATEGORIES, CATEGORY_COLORS } from '@/types'
 import { dbOperations } from '@/lib/db'
 import { generateId } from '@/lib/utils'
 import { planRecurringSync } from '@/lib/recurring'
+import { scheduleSync, setOnDataChanged } from '@/lib/sync'
 import { format, subMonths, startOfMonth } from 'date-fns'
 
 // Next month (YYYY-MM) after a given YYYY-MM string.
@@ -32,6 +33,7 @@ interface FinanceState {
 
   // Actions
   initialize: () => Promise<void>
+  refreshFromDb: () => Promise<void>
   setCurrentMonth: (month: string) => void
   setActiveTab: (tab: 'dashboard' | 'analytics' | 'settings') => void
 
@@ -86,6 +88,9 @@ export const useStore = create<FinanceState>()(
       initialize: async () => {
         if (get().initialized || initInFlight) return
         initInFlight = true
+
+        // Let the sync engine refresh in-memory state after it pulls remote changes.
+        setOnDataChanged(() => get().refreshFromDb())
 
         set({ isLoading: true })
         try {
@@ -166,6 +171,24 @@ export const useStore = create<FinanceState>()(
         }
       },
 
+      // Re-read all collections from IndexedDB into memory (used after a sync pull).
+      refreshFromDb: async () => {
+        const [transactions, savingGoals, settings, recurringRules] = await Promise.all([
+          dbOperations.getAllTransactions(),
+          dbOperations.getAllSavingGoals(),
+          dbOperations.getSettings(),
+          dbOperations.getAllRecurringRules()
+        ])
+        set({
+          transactions: transactions.sort(
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+          ),
+          savingGoals,
+          settings,
+          recurringRules
+        })
+      },
+
       setCurrentMonth: (month) => set({ currentMonth: month }),
       setActiveTab: (tab) => set({ activeTab: tab }),
 
@@ -198,6 +221,7 @@ export const useStore = create<FinanceState>()(
             (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
           )
         }))
+        scheduleSync()
 
         // Create a recurring rule for the months that follow this one.
         if (makeRecurring && transaction.primaryCategory) {
@@ -221,21 +245,26 @@ export const useStore = create<FinanceState>()(
             t.id === id ? { ...t, ...updates, updatedAt: Date.now() } : t
           )
         }))
+        scheduleSync()
       },
 
       deleteTransaction: async (id) => {
         await dbOperations.deleteTransaction(id)
+        await dbOperations.addTombstone('transactions', id)
         set((state) => ({
           transactions: state.transactions.filter((t) => t.id !== id)
         }))
+        scheduleSync()
       },
 
       setSavingGoal: async (month, goal, categoryBudgets) => {
+        const existing = get().savingGoals.find((g) => g.month === month)
         const savingGoal: SavingGoal = {
-          id: generateId(),
+          id: existing?.id ?? generateId(),
           month,
           savingGoal: goal,
-          maxSpendingByCategory: categoryBudgets
+          maxSpendingByCategory: categoryBudgets,
+          updatedAt: Date.now()
         }
 
         await dbOperations.setSavingGoal(savingGoal)
@@ -248,17 +277,21 @@ export const useStore = create<FinanceState>()(
           }
           return { savingGoals: [...state.savingGoals, savingGoal] }
         })
+        scheduleSync()
       },
 
       updateSettings: async (updates) => {
         await dbOperations.updateSettings(updates)
+        await dbOperations.setSyncMeta('settingsUpdatedAt', Date.now())
         set((state) => ({
           settings: { ...state.settings, ...updates }
         }))
+        scheduleSync()
       },
 
       addSubcategory: async (category, subcategory) => {
         await dbOperations.addCustomSubcategory(category, subcategory)
+        await dbOperations.setSyncMeta('settingsUpdatedAt', Date.now())
         set((state) => ({
           settings: {
             ...state.settings,
@@ -268,6 +301,7 @@ export const useStore = create<FinanceState>()(
             }
           }
         }))
+        scheduleSync()
       },
 
       // Union of default + custom + every subcategory ever used in a transaction,
@@ -305,6 +339,7 @@ export const useStore = create<FinanceState>()(
             (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
           )
         }))
+        scheduleSync()
       },
 
       updateRecurringRule: async (id, updates) => {
@@ -314,15 +349,18 @@ export const useStore = create<FinanceState>()(
             r.id === id ? { ...r, ...updates, updatedAt: Date.now() } : r
           )
         }))
+        scheduleSync()
       },
 
       deleteRecurringRule: async (id, deleteInstances = false) => {
         await dbOperations.deleteRecurringRule(id)
+        await dbOperations.addTombstone('recurringRules', id)
 
         if (deleteInstances) {
           const toDelete = get().transactions.filter((t) => t.recurringRuleId === id)
           for (const t of toDelete) {
             await dbOperations.deleteTransaction(t.id)
+            await dbOperations.addTombstone('transactions', t.id)
           }
           set((state) => ({
             recurringRules: state.recurringRules.filter((r) => r.id !== id),
@@ -341,6 +379,7 @@ export const useStore = create<FinanceState>()(
             )
           }))
         }
+        scheduleSync()
       },
 
       getMonthlyStats: (month) => {
@@ -514,6 +553,7 @@ export const useStore = create<FinanceState>()(
             savingGoals: [...state.savingGoals, ...data.savingGoals!]
           }))
         }
+        scheduleSync()
       },
 
       exportData: async () => {
