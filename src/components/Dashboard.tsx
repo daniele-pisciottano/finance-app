@@ -9,6 +9,7 @@ import { formatCurrency, formatPercentage, getMonthName } from '@/lib/utils'
 import { CATEGORY_ICONS } from '@/types'
 import { CategoryChart } from '@/components/CategoryChart'
 import { TransactionList } from '@/components/TransactionList'
+import { DraftsCard } from '@/components/DraftsCard'
 
 interface DashboardProps {
   onEditTransaction?: (transaction: import('@/types').Transaction) => void
@@ -144,6 +145,9 @@ export function Dashboard({ onEditTransaction }: DashboardProps) {
           <ChevronRight className="h-5 w-5" />
         </Button>
       </div>
+
+      {/* Drafts to confirm (auto-captured expenses) */}
+      {onEditTransaction && <DraftsCard onEdit={onEditTransaction} />}
 
       {/* Monthly Overview */}
       <Card>

@@ -5,6 +5,7 @@ import { DEFAULT_SUBCATEGORIES, CATEGORY_COLORS } from '@/types'
 import { dbOperations } from '@/lib/db'
 import { generateId } from '@/lib/utils'
 import { planRecurringSync } from '@/lib/recurring'
+import { parseNotification } from '@/lib/notificationParser'
 import { scheduleSync, setOnDataChanged } from '@/lib/sync'
 import { format, subMonths, startOfMonth } from 'date-fns'
 
@@ -41,6 +42,11 @@ interface FinanceState {
   addTransaction: (transaction: Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>
   updateTransaction: (id: string, updates: Partial<Transaction>) => Promise<void>
   deleteTransaction: (id: string) => Promise<void>
+
+  // Draft (auto-capture) actions
+  getDrafts: () => Transaction[]
+  addDraftFromText: (text: string, opts?: { title?: string; appHint?: string }) => Promise<{ ok: boolean; amount: number | null }>
+  confirmDraft: (id: string) => Promise<void>
 
   // Saving goal actions
   setSavingGoal: (month: string, goal: number, categoryBudgets?: Partial<Record<PrimaryCategory, number>>) => Promise<void>
@@ -257,6 +263,58 @@ export const useStore = create<FinanceState>()(
         scheduleSync()
       },
 
+      getDrafts: () => {
+        return get().transactions
+          .filter((t) => t.draft)
+          .sort((a, b) => b.createdAt - a.createdAt)
+      },
+
+      addDraftFromText: async (text, opts = {}) => {
+        const parsed = parseNotification(text, { title: opts.title, appHint: opts.appHint })
+        const amount = parsed.amount != null && parsed.amount > 0 ? parsed.amount : null
+
+        // Possible-duplicate check: an expense with the same amount within ±3 days
+        // (e.g. a PayPal charge later re-billed by Intesa).
+        const today = new Date()
+        const within3Days = (dateStr: string) => {
+          const d = new Date(dateStr + 'T00:00:00')
+          return Math.abs(today.getTime() - d.getTime()) <= 3 * 24 * 60 * 60 * 1000
+        }
+        const possibleDuplicate = amount != null && get().transactions.some((t) =>
+          t.type === 'expense' &&
+          Math.abs(t.amount - amount) < 0.01 &&
+          within3Days(t.date)
+        )
+
+        const draft: Transaction = {
+          id: generateId(),
+          type: 'expense',
+          date: format(today, 'yyyy-MM-dd'), // receipt date; parsed date can be ambiguous
+          amount: amount ?? 0,
+          primaryCategory: parsed.guess?.primaryCategory as PrimaryCategory | undefined,
+          secondaryCategory: parsed.guess?.secondaryCategory,
+          description: parsed.merchant || '',
+          draft: true,
+          source: parsed.source,
+          possibleDuplicate,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        }
+
+        await dbOperations.addTransaction(draft)
+        set((state) => ({
+          transactions: [draft, ...state.transactions].sort(
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+          )
+        }))
+        scheduleSync()
+        return { ok: true, amount }
+      },
+
+      confirmDraft: async (id) => {
+        await get().updateTransaction(id, { draft: false, possibleDuplicate: false })
+      },
+
       setSavingGoal: async (month, goal, categoryBudgets) => {
         const existing = get().savingGoals.find((g) => g.month === month)
         const savingGoal: SavingGoal = {
@@ -384,7 +442,8 @@ export const useStore = create<FinanceState>()(
 
       getMonthlyStats: (month) => {
         const { transactions } = get()
-        const monthTransactions = transactions.filter((t) => t.date.startsWith(month))
+        // Drafts (captured-but-unconfirmed) never count towards stats.
+        const monthTransactions = transactions.filter((t) => t.date.startsWith(month) && !t.draft)
 
         const totalIncome = monthTransactions
           .filter((t) => t.type === 'income')

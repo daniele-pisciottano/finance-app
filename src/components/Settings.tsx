@@ -92,9 +92,9 @@ export function Settings() {
   const handleExportCSV = () => {
     setCsvExportLoading(true)
     try {
-      // Filter only expenses for the selected month
+      // Filter only expenses for the selected month (drafts excluded until confirmed)
       const expenses = transactions.filter(t =>
-        t.type === 'expense' && t.date.startsWith(csvExportMonth)
+        t.type === 'expense' && !t.draft && t.date.startsWith(csvExportMonth)
       )
 
       if (expenses.length === 0) {

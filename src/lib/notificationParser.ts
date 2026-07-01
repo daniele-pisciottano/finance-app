@@ -20,10 +20,36 @@ export interface ParsedExpense {
   raw: string
 }
 
-// "1.234,56" -> 1234.56 ; "1,99" -> 1.99 ; "14,00" -> 14
+// "1.234,56" -> 1234.56 ; "1,99" -> 1.99 ; "14,00" -> 14  (Italian convention)
 export function parseItalianAmount(s: string): number | null {
   const cleaned = s.replace(/\s|€/g, '').replace(/\./g, '').replace(',', '.')
   const n = parseFloat(cleaned)
+  return Number.isFinite(n) ? n : null
+}
+
+// Flexible parser that copes with both Italian ("1.234,56", "1,99") and English
+// ("$2", "1,234.56", "1.38") amounts — used for Revolut, whose language/currency
+// varies. Decides the decimal separator from whichever of . or , comes last.
+export function parseAmountFlexible(s: string): number | null {
+  const digits = s.replace(/[^\d.,]/g, '')
+  if (!digits) return null
+  const lastComma = digits.lastIndexOf(',')
+  const lastDot = digits.lastIndexOf('.')
+  let normalized: string
+  if (lastComma > -1 && lastDot > -1) {
+    // both present: the later one is the decimal separator
+    normalized = lastComma > lastDot
+      ? digits.replace(/\./g, '').replace(',', '.')
+      : digits.replace(/,/g, '')
+  } else if (lastComma > -1) {
+    // only comma: decimal if exactly 2 trailing digits, else thousands
+    normalized = /,\d{2}$/.test(digits) ? digits.replace(',', '.') : digits.replace(/,/g, '')
+  } else if (lastDot > -1) {
+    normalized = /\.\d{2}$/.test(digits) ? digits : digits.replace(/\./g, '')
+  } else {
+    normalized = digits
+  }
+  const n = parseFloat(normalized)
   return Number.isFinite(n) ? n : null
 }
 
@@ -88,6 +114,7 @@ function detectSource(text: string, appHint?: string): PaymentSource {
 
 export interface ParseOptions {
   appHint?: string // app / package name from the phone automation
+  title?: string // notification title (Revolut puts the merchant here)
   today?: Date // reference date (defaults to now)
 }
 
@@ -128,29 +155,59 @@ export function parseNotification(text: string, options: ParseOptions = {}): Par
     }
   }
 
-  // Revolut / PayPal (and Intesa fallback): generic amount + best-effort merchant.
-  const amtMatch = text.match(/(?:€|EUR)\s*([\d.]*\d,\d{2})|([\d.]*\d,\d{2})\s*(?:€|EUR)/i)
-  if (amtMatch) {
-    const raw = parseItalianAmount(amtMatch[1] || amtMatch[2])
-    base.rawAmount = raw
-    if (source === 'revolut' && raw != null) {
-      base.amount = Math.round((raw / 2) * 100) / 100
-      base.halved = true
-      base.note = `Revolut (conto cointestato): quota 50% di ${raw?.toFixed(2)} €`
-    } else {
-      base.amount = raw
-    }
-  }
-  // Merchant: text after "at " / "presso " / "da " up to end/period.
-  const merchMatch = text.match(/(?:\bat\b|\bpresso\b|\bda\b)\s+(.+?)[.\n]?\s*$/i)
-  if (merchMatch) {
-    base.merchant = merchMatch[1].trim()
-    base.guess = guessCategory(base.merchant)
-  }
   if (source === 'paypal') {
-    base.note = base.note
-      ? base.note
-      : 'PayPal: verifica il possibile riaddebito su Intesa (evita il doppione)'
+    // "Hai inviato 24,00 € EUR a Michele Spano" / "Hai pagato 9,99 € a Spotify"
+    const m = text.match(/Hai (?:inviato|pagato)\s+([\d.]*\d,\d{2})\s*€(?:\s*EUR)?\s+a\s+(.+?)[.\n]?\s*$/i)
+    if (m) {
+      base.rawAmount = parseItalianAmount(m[1])
+      base.amount = base.rawAmount
+      base.merchant = m[2].trim()
+    } else {
+      base.rawAmount = base.amount = firstAmount(text)
+      base.merchant = options.title || null
+    }
+    base.guess = guessCategory(base.merchant)
+    base.note = 'PayPal: verifica il possibile riaddebito su Intesa (evita il doppione)'
+    return base
   }
+
+  if (source === 'revolut') {
+    // Body like "Paid $2 at KFC" / "Pagato 12,50 € a Esselunga". The merchant is
+    // usually also the notification title. Ignore the "Balance/Saldo" line.
+    const line = text.match(
+      /(?:Paid|Spent|Pagato|Speso|Hai speso|Hai pagato)\s+[^\d-]*([\d.,]+)\s*(?:at|a|da|presso)\s+(.+?)\s*$/im
+    )
+    let raw: number | null
+    if (line) {
+      raw = parseAmountFlexible(line[1])
+      base.merchant = options.title || line[2].trim()
+    } else {
+      raw = firstAmount(text, /balance|saldo/i)
+      base.merchant = options.title || null
+    }
+    base.rawAmount = raw
+    if (raw != null) {
+      base.amount = Math.round((raw / 2) * 100) / 100 // joint account: record your 50%
+      base.halved = true
+      base.note = `Revolut (conto cointestato): quota 50% di ${raw.toFixed(2)}`
+    }
+    base.guess = guessCategory(base.merchant)
+    return base
+  }
+
+  // Unknown source: best-effort amount + title as merchant.
+  base.rawAmount = base.amount = firstAmount(text)
+  base.merchant = options.title || null
+  base.guess = guessCategory(base.merchant)
   return base
+}
+
+// First currency-like amount in the text, skipping lines matching `skip` (e.g. balance).
+function firstAmount(text: string, skip?: RegExp): number | null {
+  for (const rawLine of text.split('\n')) {
+    if (skip && skip.test(rawLine)) continue
+    const m = rawLine.match(/(?:€|EUR|\$|£)\s*([\d.,]+)|([\d.,]+)\s*(?:€|EUR)/i)
+    if (m) return parseAmountFlexible(m[1] || m[2])
+  }
+  return null
 }
