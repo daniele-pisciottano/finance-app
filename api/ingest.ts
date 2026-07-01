@@ -46,14 +46,32 @@ export default async function handler(req: any, res: any) {
       return res.status(500).json({ error: 'Server not configured (missing env vars)' })
     }
 
-    const body = typeof req.body === 'string' ? safeJson(req.body) : req.body || {}
-    const provided = req.headers['x-ingest-secret'] || body.secret
+    // Accept fields from a JSON/form body, OR a plain-text body with app/title/text
+    // on separate lines (the most reliable from phone tools that don't URL-encode).
+    const q = (req.query || {}) as Record<string, any>
+    let app = '', title = '', text = '', bodySecret: any
+    const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : req.body
+
+    if (raw && typeof raw === 'object') {
+      app = str(raw.app); title = str(raw.title); text = str(raw.text); bodySecret = raw.secret
+    } else if (typeof raw === 'string') {
+      const j = raw.trim().startsWith('{') ? safeJson(raw) : null
+      if (j && typeof j === 'object') {
+        app = str(j.app); title = str(j.title); text = str(j.text); bodySecret = j.secret
+      } else {
+        const lines = raw.split(/\r?\n/)
+        app = (lines[0] || '').trim()
+        title = (lines[1] || '').trim()
+        text = lines.slice(2).join('\n').trim()
+      }
+    }
+
+    const provided = firstStr(req.headers['x-ingest-secret']) || q.secret || bodySecret
     if (provided !== INGEST_SECRET) return res.status(401).json({ error: 'Unauthorized' })
 
-    const text: string = (body.text || '').toString()
     if (!text.trim()) return res.status(400).json({ error: 'Missing text' })
 
-    const parsed = parseNotification(text, body.title, body.app)
+    const parsed = parseNotification(text, title || undefined, app || undefined)
     const amount = parsed.amount != null && parsed.amount > 0 ? parsed.amount : 0
 
     const now = Date.now()
@@ -94,6 +112,14 @@ export default async function handler(req: any, res: any) {
 
 function safeJson(s: string): any {
   try { return JSON.parse(s) } catch { return {} }
+}
+
+function str(v: any): string {
+  return v == null ? '' : String(v)
+}
+
+function firstStr(v: any): string {
+  return Array.isArray(v) ? String(v[0] ?? '') : v == null ? '' : String(v)
 }
 
 // ---- Inlined compact parser (kept in sync with src/lib/notificationParser.ts) ----

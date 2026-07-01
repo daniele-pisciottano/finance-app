@@ -55,23 +55,32 @@ Installa **MacroDroid** (gratis) e dàgli il permesso di **accesso alle notifich
 Crea **una macro per ciascuna app** (o una sola con più trigger):
 
 **Trigger** → *Notification Received*
-- App: seleziona **Intesa Sanpaolo Mobile** (poi ripeti per Revolut e PayPal).
+- App: seleziona **Intesa Sanpaolo Mobile**, **Revolut** e **PayPal** (puoi metterle tutte in un'unica macro).
 
-**Action** → *HTTP Request*
+**Action** → *HTTP Request (POST)* — configurazione **a prova di errore** (niente header, niente form):
 - Metodo: **POST**
-- URL: `https://<tuo-dominio>.vercel.app/api/ingest`
-- Header: aggiungi `x-ingest-secret` = `IL_TUO_SECRET`
-- Content type: **application/x-www-form-urlencoded** (evita problemi con virgolette/apici nel testo)
-- Body (usa le "magic text" di MacroDroid):
+- URL (metti il secret qui, è alfanumerico e sicuro):
   ```
-  app=[notification_app]&title=[notification_title]&text=[notification_text]
+  https://<tuo-dominio>.vercel.app/api/ingest?secret=IL_TUO_SECRET
+  ```
+- Content type: **text/plain**
+- **NON** aggiungere header personalizzati (era quello a dare l'errore `x-ingest-secret`).
+- Body (3 righe — app, titolo, testo — con le "magic text" di MacroDroid):
+  ```
+  [notification_app]
+  [notification_title]
+  [notification_text]
   ```
 
-> `title` è importante per **Revolut**, che mette l'esercente nel titolo della notifica.
-> Il ÷2 di Revolut e l'avviso doppione PayPal/Intesa sono gestiti in automatico.
+Con il testo semplice non serve alcuna codifica (spazi, `€`, virgolette passano così come sono).
+`title` (2ª riga) serve a **Revolut**, che mette l'esercente nel titolo. Il ÷2 di Revolut e
+l'avviso doppione PayPal/Intesa sono automatici.
 
-**Tasker** (alternativa): Profilo *Event → Notification*, poi *Net → HTTP Request* con gli stessi
-campi e le variabili `%evtprm()` / `%NTITLE` / `%NTEXT`.
+> Perché così: MacroDroid non URL-codifica il corpo e gestisce male gli header, quindi
+> form-urlencoded + header davano errori. Secret nell'URL + corpo di testo = zero problemi.
+
+**Tasker** (alternativa): Profilo *Event → Notification*, poi *Net → HTTP Request*, stesso URL con
+`?secret=...`, body di 3 righe con `%NTITLE` e `%NTEXT` (e il nome app).
 
 ---
 
