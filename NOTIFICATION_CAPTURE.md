@@ -28,6 +28,12 @@ Vercel → progetto → **Settings → Environment Variables** (ambiente **Produ
 
 Poi **Redeploy**.
 
+### Verifica veloce delle variabili (dal browser)
+
+Apri nel browser: `https://<tuo-dominio>.vercel.app/api/ingest`
+Risposta attesa: `{"ok":true,"env":{"INGEST_SECRET":true,"SUPABASE_URL":true,"SUPABASE_SERVICE_ROLE_KEY":true,"INGEST_USER_ID":true}}`.
+Se qualche valore è `false`, quella variabile manca (aggiungila su Vercel e fai **Redeploy**).
+
 ### Test veloce dell'endpoint (dal PC)
 
 ```bash
