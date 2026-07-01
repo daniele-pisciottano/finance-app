@@ -5,12 +5,26 @@ import { Dashboard } from '@/components/Dashboard'
 import { Analytics } from '@/components/Analytics'
 import { Settings } from '@/components/Settings'
 import { TransactionForm } from '@/components/TransactionForm'
+import { Auth } from '@/components/Auth'
 import { useStore } from '@/store/useStore'
+import { useAuthStore } from '@/store/authStore'
 import { cn } from '@/lib/utils'
 import type { Transaction } from '@/types'
 
+function Loading() {
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="animate-pulse text-center">
+        <div className="text-4xl mb-4">💰</div>
+        <div className="text-muted-foreground">Caricamento...</div>
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const { initialize, isLoading, initialized, activeTab, setActiveTab, settings } = useStore()
+  const { configured, session, loading: authLoading, init: authInit } = useAuthStore()
   const [formOpen, setFormOpen] = useState(false)
   const [editTransaction, setEditTransaction] = useState<Transaction | undefined>(undefined)
 
@@ -25,6 +39,10 @@ function App() {
   }
 
   useEffect(() => {
+    authInit()
+  }, [authInit])
+
+  useEffect(() => {
     initialize()
   }, [initialize])
 
@@ -35,16 +53,11 @@ function App() {
     }
   }, [initialized, settings.darkMode])
 
-  if (isLoading || !initialized) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-center">
-          <div className="text-4xl mb-4">💰</div>
-          <div className="text-muted-foreground">Caricamento...</div>
-        </div>
-      </div>
-    )
-  }
+  // When Supabase is configured, require login before showing the app.
+  if (configured && authLoading) return <Loading />
+  if (configured && !session) return <Auth />
+
+  if (isLoading || !initialized) return <Loading />
 
   return (
     <div className="min-h-screen bg-background">

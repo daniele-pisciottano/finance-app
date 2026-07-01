@@ -109,6 +109,15 @@ export interface SavingGoal {
   month: string // YYYY-MM
   savingGoal: number
   maxSpendingByCategory?: Partial<Record<PrimaryCategory, number>>
+  updatedAt?: number // for sync last-write-wins
+}
+
+// Local tombstone: records a deleted item so the deletion can be propagated on sync.
+export interface Tombstone {
+  key: string // `${collection}:${id}`
+  collection: 'transactions' | 'savingGoals' | 'recurringRules'
+  recordId: string
+  updatedAt: number
 }
 
 export interface UserSettings {

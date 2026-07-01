@@ -1,6 +1,12 @@
 import Dexie, { type EntityTable } from 'dexie'
-import type { Transaction, SavingGoal, UserSettings, RecurringRule } from '@/types'
+import type { Transaction, SavingGoal, UserSettings, RecurringRule, Tombstone } from '@/types'
 import { DEFAULT_SUBCATEGORIES, type PrimaryCategory } from '@/types'
+
+// Simple key/value row for local sync bookkeeping (e.g. lastPulledAt).
+interface SyncMeta {
+  key: string
+  value: number
+}
 
 // Define the database
 const db = new Dexie('FinanceTrackerDB') as Dexie & {
@@ -8,6 +14,8 @@ const db = new Dexie('FinanceTrackerDB') as Dexie & {
   savingGoals: EntityTable<SavingGoal, 'id'>
   settings: EntityTable<UserSettings & { id: string }, 'id'>
   recurringRules: EntityTable<RecurringRule, 'id'>
+  tombstones: EntityTable<Tombstone, 'key'>
+  syncMeta: EntityTable<SyncMeta, 'key'>
 }
 
 db.version(1).stores({
@@ -22,6 +30,16 @@ db.version(2).stores({
   savingGoals: 'id, month',
   settings: 'id',
   recurringRules: 'id, active, startMonth'
+})
+
+// v3: local sync bookkeeping (tombstones for deletes + lastPulledAt)
+db.version(3).stores({
+  transactions: 'id, type, date, primaryCategory, secondaryCategory, incomeType, createdAt, recurringRuleId',
+  savingGoals: 'id, month',
+  settings: 'id',
+  recurringRules: 'id, active, startMonth',
+  tombstones: 'key, collection',
+  syncMeta: 'key'
 })
 
 // Default settings
@@ -142,6 +160,52 @@ export const dbOperations = {
     }
   },
 
+  // --- Sync support -------------------------------------------------------
+  async addTombstone(collection: Tombstone['collection'], recordId: string): Promise<void> {
+    await db.tombstones.put({
+      key: `${collection}:${recordId}`,
+      collection,
+      recordId,
+      updatedAt: Date.now()
+    })
+  },
+
+  async getTombstones(): Promise<Tombstone[]> {
+    return db.tombstones.toArray()
+  },
+
+  async removeTombstone(collection: Tombstone['collection'], recordId: string): Promise<void> {
+    await db.tombstones.delete(`${collection}:${recordId}`)
+  },
+
+  async getSyncMeta(key: string): Promise<number> {
+    const row = await db.syncMeta.get(key)
+    return row?.value ?? 0
+  },
+
+  async setSyncMeta(key: string, value: number): Promise<void> {
+    await db.syncMeta.put({ key, value })
+  },
+
+  // Raw writes used to apply data pulled from the server (no side effects).
+  async putTransactionRaw(t: Transaction): Promise<void> {
+    await db.transactions.put(t)
+  },
+  async putSavingGoalRaw(g: SavingGoal): Promise<void> {
+    await db.savingGoals.put(g)
+  },
+  async putRecurringRuleRaw(r: RecurringRule): Promise<void> {
+    await db.recurringRules.put(r)
+  },
+  async putSettingsRaw(settings: UserSettings): Promise<void> {
+    await db.settings.put({ id: 'user-settings', ...settings })
+  },
+  async deleteRecordRaw(collection: Tombstone['collection'], id: string): Promise<void> {
+    if (collection === 'transactions') await db.transactions.delete(id)
+    else if (collection === 'savingGoals') await db.savingGoals.delete(id)
+    else if (collection === 'recurringRules') await db.recurringRules.delete(id)
+  },
+
   // Bulk operations for import
   async importTransactions(transactions: Transaction[]): Promise<void> {
     await db.transactions.bulkAdd(transactions)
@@ -152,6 +216,8 @@ export const dbOperations = {
     await db.savingGoals.clear()
     await db.settings.clear()
     await db.recurringRules.clear()
+    await db.tombstones.clear()
+    await db.syncMeta.clear()
   },
 
   // Export all data
