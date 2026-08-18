@@ -103,8 +103,9 @@ In sintesi serve, per ogni persona:
 
 1. un **token** in più nella variabile `INGEST_TOKENS` su Vercel, associato al suo user id
    Supabase;
-2. **MacroDroid** sul suo telefono con **una** macro (trigger *Notifica ricevuta* → azione
-   *Richiesta HTTP POST*), con il suo token nell'URL;
+2. **MacroDroid** sul suo telefono con **una** macro e **due** trigger — uno per le app di
+   pagamento senza filtri, uno per l'SMS della carta filtrato su "Autorizzato pagamento" —
+   e una sola azione *Richiesta HTTP POST* col suo token;
 3. le regole in **Impostazioni → Cattura automatica dalle notifiche**: quali app catturare,
    se dividere Revolut a metà (di default solo sulle notifiche "Joint" del conto
    cointestato), quali importi segnalare come cauzione.

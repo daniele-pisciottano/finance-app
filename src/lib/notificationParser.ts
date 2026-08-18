@@ -36,16 +36,26 @@ export const DEFAULT_CAPTURE_RULES: Pick<CaptureSettings, 'revolutSplit' | 'depo
   paypalDuplicateWarning: true
 }
 
-// Revolut titles a shared-account payment "Joint · Tamoil" and a personal one with the
-// bare merchant ("Nintendo") — no prefix at all. Requiring the separator keeps a merchant
-// that merely starts with the word (a "Joint Venture Srl") from being halved.
+// Revolut names the account in the notification title, in the phone's own language:
+// "Joint · Tamoil" on an English phone, "Conto cointestato · Google Play" on an Italian
+// one. A personal payment carries the bare merchant ("Nintendo") or a personal-account
+// prefix. Requiring the separator keeps a merchant that merely starts with one of these
+// words (a "Joint Venture Srl") from being halved.
+const SHARED_ACCOUNT_PREFIX = /^\s*(?:conto\s+)?(?:joint|shared|condivis\w*|cointestat\w*)\s*[·•|:-]/i
+
 export function isJointTitle(title: string | undefined): boolean {
-  return /^\s*(?:joint|shared|condiviso|cointestato)\s*[·•|:-]/i.test(title || '')
+  return SHARED_ACCOUNT_PREFIX.test(title || '')
 }
 
-// "Joint · Tenuterrico" -> "Tenuterrico" ; "KFC" -> "KFC".
+// "Joint · Tenuterrico" -> "Tenuterrico" ; "Conto cointestato · Google Play" -> "Google
+// Play" ; "KFC" -> "KFC" (no separator, nothing to strip).
 export function cleanMerchantTitle(title: string): string {
-  return title.replace(/^\s*(?:joint|shared|current|personal|condiviso|cointestato|conto\w*)\s*[·•|:-]\s*/i, '').trim()
+  return title
+    .replace(
+      /^\s*(?:conto\s+)?(?:joint|shared|current|personal\w*|condivis\w*|cointestat\w*|conto\w*)\s*[·•|:-]\s*/i,
+      ''
+    )
+    .trim()
 }
 
 // "1.234,56" -> 1234.56 ; "1,99" -> 1.99 ; "14,00" -> 14  (Italian convention)
@@ -315,7 +325,12 @@ export function parseNotification(text: string, options: ParseOptions = {}): Par
       raw = parseAmountFlexible(atLine[1])
       merchant = titleMerchant || atLine[2].trim()
     } else {
+      // Every Revolut body carries a balance as well as the amount ("Saldo del Pocket
+      // EUR: 88,82 €", "EUR balance: €121.41"), so each pattern anchors on a spending
+      // word and none falls back to "the first number in the text".
       const spent =
+        // Italian: "Spesa di 6,99 €" / "Pagamento di 6,99 €"
+        text.match(/(?:spesa|pagamento|addebito)\s+di\s+([\d.,]+)\s*(?:€|EUR|\$|£)?/i) ||
         text.match(/(?:€|\$|£)\s*([\d.,]+)\s*(?:spent|speso|paid|pagat\w*)/i) ||
         text.match(/([\d.,]+)\s*(?:€|\$|£)?\s*(?:spent|speso)/i) ||
         text.match(/(?:spent|speso|paid|pagat\w*)\s*(?:€|\$|£)?\s*([\d.,]+)/i)
