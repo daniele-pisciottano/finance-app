@@ -13,7 +13,8 @@ import {
 } from '@/components/ui/select'
 import { useStore } from '@/store/useStore'
 import { formatCurrency } from '@/lib/utils'
-import { CATEGORY_ICONS, CATEGORY_COLORS, PRIMARY_CATEGORIES, type PrimaryCategory } from '@/types'
+import type { PrimaryCategory } from '@/types'
+import { useCategories } from '@/lib/categories'
 import { TrendingUp, TrendingDown, PiggyBank, Percent, Calendar, BarChart3 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -21,6 +22,7 @@ const MONTHS_IT = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set'
 
 export function Analytics() {
   const { getMonthlyStats, transactions } = useStore()
+  const { categories, icon } = useCategories()
   const currentYear = new Date().getFullYear()
   const [selectedYear, setSelectedYear] = useState(currentYear)
 
@@ -87,31 +89,31 @@ export function Analytics() {
 
   // Category breakdown for the year
   const categoryData = useMemo(() => {
-    const totals: Record<PrimaryCategory, number> = {} as Record<PrimaryCategory, number>
-    PRIMARY_CATEGORIES.forEach(cat => { totals[cat] = 0 })
+    const totals: Record<PrimaryCategory, number> = {}
+    categories.forEach(cat => { totals[cat.name] = 0 })
 
     for (let month = 1; month <= 12; month++) {
       const monthStr = `${selectedYear}-${String(month).padStart(2, '0')}`
       const stats = getMonthlyStats(monthStr)
 
-      PRIMARY_CATEGORIES.forEach(cat => {
-        totals[cat] += stats.byCategory[cat] || 0
+      categories.forEach(cat => {
+        totals[cat.name] += stats.byCategory[cat.name] || 0
       })
     }
 
     const total = Object.values(totals).reduce((sum, val) => sum + val, 0)
 
-    return PRIMARY_CATEGORIES
+    return categories
       .map(cat => ({
-        category: cat,
-        icon: CATEGORY_ICONS[cat],
-        color: CATEGORY_COLORS[cat],
-        total: totals[cat],
-        percentage: total > 0 ? (totals[cat] / total) * 100 : 0
+        category: cat.name,
+        icon: cat.icon,
+        color: cat.color,
+        total: totals[cat.name],
+        percentage: total > 0 ? (totals[cat.name] / total) * 100 : 0
       }))
       .filter(c => c.total > 0)
       .sort((a, b) => b.total - a.total)
-  }, [selectedYear, getMonthlyStats])
+  }, [selectedYear, getMonthlyStats, categories])
 
   // Category trend per month
   const categoryTrendData = useMemo(() => {
@@ -475,7 +477,7 @@ export function Analytics() {
                       </Pie>
                       <Tooltip
                         formatter={tooltipFormatter}
-                        labelFormatter={(label) => `${CATEGORY_ICONS[label as PrimaryCategory] || ''} ${label}`}
+                        labelFormatter={(label) => `${icon(label as string)} ${label}`}
                       />
                     </PieChart>
                   </ResponsiveContainer>

@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { PieChart as PieIcon, BarChart2 } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
-import { CATEGORY_ICONS, type PrimaryCategory } from '@/types'
+import { useCategories } from '@/lib/categories'
 
 interface CategoryChartProps {
   data: {
@@ -15,6 +15,7 @@ interface CategoryChartProps {
 }
 
 export function CategoryChart({ data }: CategoryChartProps) {
+  const { icon } = useCategories()
   const [chartType, setChartType] = useState<'pie' | 'bar'>('pie')
 
   if (data.length === 0) {
@@ -73,7 +74,7 @@ export function CategoryChart({ data }: CategoryChartProps) {
               </Pie>
               <Tooltip
                 formatter={tooltipFormatter}
-                labelFormatter={(label) => `${CATEGORY_ICONS[label as PrimaryCategory] || ''} ${label}`}
+                labelFormatter={(label) => `${icon(label as string)} ${label}`}
               />
             </PieChart>
           </ResponsiveContainer>
@@ -90,7 +91,7 @@ export function CategoryChart({ data }: CategoryChartProps) {
                 dataKey="name"
                 width={80}
                 fontSize={12}
-                tickFormatter={(v) => `${CATEGORY_ICONS[v as PrimaryCategory] || ''} ${v.slice(0, 6)}`}
+                tickFormatter={(v) => `${icon(v as string)} ${v.slice(0, 6)}`}
               />
               <Tooltip formatter={tooltipFormatter} />
               <Bar dataKey="value" radius={[0, 4, 4, 0]}>
@@ -115,7 +116,7 @@ export function CategoryChart({ data }: CategoryChartProps) {
               style={{ backgroundColor: item.color }}
             />
             <span className="truncate">
-              {CATEGORY_ICONS[item.name as PrimaryCategory]} {item.name}
+              {icon(item.name)} {item.name}
             </span>
             <span className="ml-auto text-muted-foreground text-xs">
               {item.percentage.toFixed(0)}%

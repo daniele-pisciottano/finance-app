@@ -15,7 +15,8 @@ import {
 } from '@/components/ui/select'
 import { useStore } from '@/store/useStore'
 import { formatCurrency } from '@/lib/utils'
-import { PRIMARY_CATEGORIES, CATEGORY_ICONS, type PrimaryCategory } from '@/types'
+import type { PrimaryCategory } from '@/types'
+import { useCategories } from '@/lib/categories'
 
 function clampDay(value: string): number {
   const n = parseInt(value, 10)
@@ -83,6 +84,7 @@ function SubcategoryPicker({
 }
 
 export function RecurringRulesManager() {
+  const { categories, icon } = useCategories()
   const { recurringRules, addRecurringRule, updateRecurringRule, deleteRecurringRule } = useStore()
 
   const [showAdd, setShowAdd] = useState(false)
@@ -186,7 +188,7 @@ export function RecurringRulesManager() {
               className={`border rounded-lg p-3 ${rule.active ? '' : 'opacity-60'}`}
             >
               <div className="flex items-center gap-3">
-                <span className="text-xl shrink-0">{CATEGORY_ICONS[rule.primaryCategory]}</span>
+                <span className="text-xl shrink-0">{icon(rule.primaryCategory)}</span>
                 <div className="flex-1 min-w-0">
                   <div className="font-medium truncate">
                     {rule.description || `${rule.primaryCategory}${rule.secondaryCategory ? ' - ' + rule.secondaryCategory : ''}`}
@@ -283,9 +285,9 @@ export function RecurringRulesManager() {
                 <SelectValue placeholder="Categoria" />
               </SelectTrigger>
               <SelectContent>
-                {PRIMARY_CATEGORIES.map((c) => (
-                  <SelectItem key={c} value={c}>
-                    {CATEGORY_ICONS[c]} {c}
+                {categories.map((c) => (
+                  <SelectItem key={c.name} value={c.name}>
+                    {c.icon} {c.name}
                   </SelectItem>
                 ))}
               </SelectContent>

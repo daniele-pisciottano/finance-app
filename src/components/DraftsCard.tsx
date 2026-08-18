@@ -12,7 +12,8 @@ import {
 } from '@/components/ui/select'
 import { useStore } from '@/store/useStore'
 import { formatCurrency } from '@/lib/utils'
-import { CATEGORY_ICONS, type Transaction } from '@/types'
+import type { Transaction } from '@/types'
+import { useCategories } from '@/lib/categories'
 
 const SOURCE_LABELS: Record<string, string> = {
   intesa: 'Intesa Sanpaolo',
@@ -27,6 +28,7 @@ interface DraftsCardProps {
 }
 
 export function DraftsCard({ onEdit }: DraftsCardProps) {
+  const { icon } = useCategories()
   const { getDrafts, confirmDraft, deleteTransaction, addDraftFromText, transactions, getMerchantMemory } = useStore()
   const drafts = getDrafts()
 
@@ -97,7 +99,7 @@ export function DraftsCard({ onEdit }: DraftsCardProps) {
           <div key={d.id} className="border rounded-lg p-3">
             <div className="flex items-center gap-3">
               <span className="text-xl shrink-0">
-                {eff ? CATEGORY_ICONS[eff.primaryCategory] : '❓'}
+                {eff ? icon(eff.primaryCategory) : '❓'}
               </span>
               <div className="flex-1 min-w-0">
                 <div className="font-medium truncate">{d.description || 'Spesa senza descrizione'}</div>

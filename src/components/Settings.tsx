@@ -15,7 +15,8 @@ import {
 } from '@/components/ui/select'
 import { useStore } from '@/store/useStore'
 import { formatCurrency, generateId } from '@/lib/utils'
-import { PRIMARY_CATEGORIES, CATEGORY_ICONS, type PrimaryCategory, type Transaction } from '@/types'
+import type { PrimaryCategory, Transaction } from '@/types'
+import { useCategories } from '@/lib/categories'
 import { dbOperations } from '@/lib/db'
 import { RecurringRulesManager } from '@/components/RecurringRulesManager'
 import { SyncAccount } from '@/components/SyncAccount'
@@ -39,6 +40,7 @@ function generateMonthOptions(): { value: string; label: string }[] {
 
 export function Settings() {
   const { settings, updateSettings, savingGoals, setSavingGoal, currentMonth, importData, exportData, addSubcategory, transactions } = useStore()
+  const { categories, names, icon } = useCategories()
   const [newGoal, setNewGoal] = useState(settings.defaultSavingGoal.toString())
   const [exportLoading, setExportLoading] = useState(false)
   const [csvExportLoading, setCsvExportLoading] = useState(false)
@@ -238,7 +240,7 @@ export function Settings() {
           }
 
           // Validate primary category
-          const validPrimary = PRIMARY_CATEGORIES.includes(primary as PrimaryCategory)
+          const validPrimary = names.includes(primary)
           if (!validPrimary) {
             errors.push(`Riga ${i + 1}: categoria "${primary}" non valida`)
             continue
@@ -389,9 +391,9 @@ export function Settings() {
                 <SelectValue placeholder="Categoria" />
               </SelectTrigger>
               <SelectContent>
-                {PRIMARY_CATEGORIES.map((cat) => (
-                  <SelectItem key={cat} value={cat}>
-                    {CATEGORY_ICONS[cat]} {cat}
+                {categories.map((cat) => (
+                  <SelectItem key={cat.name} value={cat.name}>
+                    {cat.icon} {cat.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -411,10 +413,10 @@ export function Settings() {
           {selectedCategory && (
             <div className="space-y-2">
               <Label className="text-sm text-muted-foreground">
-                Sottocategorie di {CATEGORY_ICONS[selectedCategory]} {selectedCategory}:
+                Sottocategorie di {icon(selectedCategory)} {selectedCategory}:
               </Label>
               <div className="flex flex-wrap gap-2">
-                {(settings.customSubcategories[selectedCategory] || []).map((sub) => (
+                {(categories.find((c) => c.name === selectedCategory)?.subcategories ?? []).map((sub) => (
                   <Badge key={sub} variant="secondary">
                     {sub}
                   </Badge>

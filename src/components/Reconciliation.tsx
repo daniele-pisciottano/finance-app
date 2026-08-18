@@ -13,12 +13,19 @@ import { useStore } from '@/store/useStore'
 import { formatCurrency } from '@/lib/utils'
 import { parseReport } from '@/lib/reportParser'
 import { reconcile, type ReconResult } from '@/lib/reconcile'
-import { PRIMARY_CATEGORIES, CATEGORY_ICONS, type PrimaryCategory } from '@/types'
+import type { MerchantTag, PrimaryCategory } from '@/types'
+import { useCategories } from '@/lib/categories'
+import { resolveTag } from '@/lib/categoryPresets'
 
 const SOURCE_LABEL: Record<string, string> = { revolut: 'Revolut', intesa: 'Intesa Sanpaolo', unknown: 'Sconosciuto' }
 
 export function Reconciliation() {
-  const { transactions, addTransaction, getMerchantMemory } = useStore()
+  const { transactions, addTransaction, getMerchantMemory, settings } = useStore()
+  const { categories } = useCategories()
+  // The report parser is taxonomy-neutral: it returns a semantic tag that only this
+  // account's category set can turn into a real category.
+  const categoryForTag = (tag: MerchantTag | undefined) =>
+    resolveTag(settings.categorySetId, tag, categories)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const [loading, setLoading] = useState(false)
@@ -36,7 +43,7 @@ export function Reconciliation() {
     setError(null)
     try {
       const buf = new Uint8Array(await file.arrayBuffer())
-      const report = parseReport(buf)
+      const report = parseReport(buf, { halveRevolut: settings.capture.revolutSplit !== 'never' })
       if (report.source === 'unknown' || report.transactions.length === 0) {
         setError('Formato non riconosciuto. Usa l’export .xlsx o .csv di Revolut o Intesa Sanpaolo.')
         return
@@ -47,7 +54,7 @@ export function Reconciliation() {
       rec.missing.forEach((m, i) => {
         initSel.add(i)
         const mem = getMerchantMemory(m.merchant)
-        initCats[i] = mem?.primaryCategory || m.primaryCategory || ''
+        initCats[i] = mem?.primaryCategory || categoryForTag(m.tag)?.primaryCategory || ''
       })
       setResult(rec)
       setSelected(initSel)
@@ -75,10 +82,11 @@ export function Reconciliation() {
     try {
       for (const i of selected) {
         const m = result.missing[i]
-        const primary = (cats[i] || m.primaryCategory || undefined) as PrimaryCategory | undefined
+        const fromTag = categoryForTag(m.tag)
+        const primary = (cats[i] || fromTag?.primaryCategory || undefined) as PrimaryCategory | undefined
         const mem = getMerchantMemory(m.merchant)
         const secondary =
-          primary && primary === m.primaryCategory ? m.secondaryCategory : mem?.secondaryCategory
+          primary && primary === fromTag?.primaryCategory ? fromTag.secondaryCategory : mem?.secondaryCategory
         await addTransaction({
           type: 'expense',
           date: m.date,
@@ -171,9 +179,9 @@ export function Reconciliation() {
                           className="mt-1.5 w-full h-8 rounded-md border bg-background px-2 text-sm"
                         >
                           <option value="">— categoria —</option>
-                          {PRIMARY_CATEGORIES.map((c) => (
-                            <option key={c} value={c}>
-                              {CATEGORY_ICONS[c]} {c}
+                          {categories.map((c) => (
+                            <option key={c.name} value={c.name}>
+                              {c.icon} {c.name}
                             </option>
                           ))}
                         </select>
