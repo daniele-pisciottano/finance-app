@@ -1,8 +1,9 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Transaction, SavingGoal, UserSettings, PrimaryCategory, MonthlyStats, Alert, RecurringRule } from '@/types'
-import { DEFAULT_SUBCATEGORIES, CATEGORY_COLORS } from '@/types'
-import { dbOperations } from '@/lib/db'
+import type { Transaction, SavingGoal, UserSettings, PrimaryCategory, MonthlyStats, Alert, RecurringRule, CategoryDef } from '@/types'
+import { dbOperations, defaultSettings } from '@/lib/db'
+import { colorOf, getCategorySet, resolveTag } from '@/lib/categoryPresets'
+// (pure lookups come from categoryPresets to keep the import graph acyclic)
 import { generateId } from '@/lib/utils'
 import { planRecurringSync } from '@/lib/recurring'
 import { parseNotification } from '@/lib/notificationParser'
@@ -69,6 +70,10 @@ interface FinanceState {
   addSubcategory: (category: PrimaryCategory, subcategory: string) => Promise<void>
   getSubcategories: (category: PrimaryCategory) => string[]
 
+  // Category set actions
+  applyCategorySet: (setId: string) => Promise<void>
+  setCategories: (categories: CategoryDef[]) => Promise<void>
+
   // Recurring rule actions
   addRecurringRule: (rule: Omit<RecurringRule, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>
   updateRecurringRule: (id: string, updates: Partial<RecurringRule>) => Promise<void>
@@ -83,7 +88,11 @@ interface FinanceState {
   getMonthlyTrend: (months: number) => { month: string; income: number; expenses: number; savings: number }[]
 
   // Import/Export
-  importData: (data: { transactions?: Transaction[]; savingGoals?: SavingGoal[] }) => Promise<void>
+  importData: (data: {
+    transactions?: Transaction[]
+    savingGoals?: SavingGoal[]
+    recurringRules?: RecurringRule[]
+  }) => Promise<{ imported: number; addedCategories: string[] }>
   exportData: () => Promise<string>
 }
 
@@ -93,12 +102,7 @@ export const useStore = create<FinanceState>()(
       transactions: [],
       savingGoals: [],
       recurringRules: [],
-      settings: {
-        darkMode: false,
-        currency: 'EUR',
-        defaultSavingGoal: 300,
-        customSubcategories: { ...DEFAULT_SUBCATEGORIES }
-      },
+      settings: defaultSettings(),
       isLoading: true,
       initialized: false,
       currentMonth: format(new Date(), 'yyyy-MM'),
@@ -229,7 +233,8 @@ export const useStore = create<FinanceState>()(
         // Add subcategory if new
         if (transaction.type === 'expense' && transaction.primaryCategory && transaction.secondaryCategory) {
           const settings = get().settings
-          const existingSubs = settings.customSubcategories[transaction.primaryCategory] || []
+          const existingSubs =
+            settings.categories.find((c) => c.name === transaction.primaryCategory)?.subcategories ?? []
           if (!existingSubs.includes(transaction.secondaryCategory)) {
             await get().addSubcategory(transaction.primaryCategory, transaction.secondaryCategory)
           }
@@ -298,11 +303,26 @@ export const useStore = create<FinanceState>()(
       },
 
       addDraftFromText: async (text, opts = {}) => {
-        const parsed = parseNotification(text, { title: opts.title, appHint: opts.appHint })
+        const { settings } = get()
+        const parsed = parseNotification(text, {
+          title: opts.title,
+          appHint: opts.appHint,
+          capture: settings.capture
+        })
 
         // Only real payment notifications become drafts (filters Revolut rewards etc.).
         if (!parsed.isPayment) {
           return { ok: false, amount: null, reason: 'not-payment' }
+        }
+
+        // Sources the account has switched off (e.g. PayPal, already covered by
+        // recurring rules) are dropped rather than queued for confirmation.
+        if (
+          parsed.source !== 'manual' &&
+          parsed.source !== 'unknown' &&
+          settings.capture.sources[parsed.source] === false
+        ) {
+          return { ok: false, amount: parsed.amount, reason: 'source-disabled' }
         }
 
         const amount = parsed.amount != null && parsed.amount > 0 ? parsed.amount : null
@@ -323,19 +343,24 @@ export const useStore = create<FinanceState>()(
 
         // Intelligent history: reuse the category/description last used for this place.
         const memory = merchant ? get().getMerchantMemory(merchant) : null
+        // Otherwise fall back to the parser's semantic tag, mapped onto *this* account's
+        // categories (the parser never knows the user's taxonomy).
+        const fromTag = resolveTag(settings.categorySetId, parsed.tag ?? undefined, settings.categories)
 
         const draft: Transaction = {
           id: generateId(),
           type: 'expense',
           date: format(today, 'yyyy-MM-dd'), // receipt date; parsed date can be ambiguous
           amount: amount ?? 0,
-          primaryCategory: (memory?.primaryCategory ?? parsed.guess?.primaryCategory) as PrimaryCategory | undefined,
-          secondaryCategory: memory?.secondaryCategory ?? parsed.guess?.secondaryCategory,
+          primaryCategory: memory?.primaryCategory ?? fromTag?.primaryCategory,
+          secondaryCategory: memory?.secondaryCategory ?? fromTag?.secondaryCategory,
           description: memory?.description || merchant,
           draft: true,
           source: parsed.source,
           possibleDuplicate,
+          possibleDeposit: parsed.possibleDeposit || undefined,
           capturedMerchant: merchant || undefined,
+          capturedTag: parsed.tag ?? undefined,
           createdAt: Date.now(),
           updatedAt: Date.now()
         }
@@ -353,14 +378,22 @@ export const useStore = create<FinanceState>()(
       confirmDraft: async (id) => {
         // If the draft still has no category, try the intelligent history one last time.
         const draft = get().transactions.find((t) => t.id === id)
-        const updates: Partial<Transaction> = { draft: false, possibleDuplicate: false }
-        if (draft && !draft.primaryCategory && draft.capturedMerchant) {
-          const memory = get().getMerchantMemory(draft.capturedMerchant)
+        const updates: Partial<Transaction> = { draft: false, possibleDuplicate: false, possibleDeposit: false }
+        if (draft && !draft.primaryCategory) {
+          const memory = draft.capturedMerchant ? get().getMerchantMemory(draft.capturedMerchant) : null
           if (memory?.primaryCategory) {
             updates.primaryCategory = memory.primaryCategory
             updates.secondaryCategory = memory.secondaryCategory
             if (memory.description && (!draft.description || draft.description === draft.capturedMerchant)) {
               updates.description = memory.description
+            }
+          } else {
+            // Captured by the ingest endpoint, which stores a taxonomy-neutral tag.
+            const { settings } = get()
+            const fromTag = resolveTag(settings.categorySetId, draft.capturedTag, settings.categories)
+            if (fromTag) {
+              updates.primaryCategory = fromTag.primaryCategory
+              updates.secondaryCategory = fromTag.secondaryCategory
             }
           }
         }
@@ -405,25 +438,60 @@ export const useStore = create<FinanceState>()(
         set((state) => ({
           settings: {
             ...state.settings,
-            customSubcategories: {
-              ...state.settings.customSubcategories,
-              [category]: [...(state.settings.customSubcategories[category] || []), subcategory]
-            }
+            categories: state.settings.categories.map((c) =>
+              c.name === category && !c.subcategories.includes(subcategory)
+                ? { ...c, subcategories: [...c.subcategories, subcategory] }
+                : c
+            )
           }
         }))
         scheduleSync()
       },
 
-      // Union of default + custom + every subcategory ever used in a transaction,
-      // so any subcategory (typed in the form, imported from CSV, ...) always stays
-      // available for future entries.
+      // Union of the category's own subcategories + every subcategory ever used in a
+      // transaction, so anything typed in the form or imported from CSV stays available
+      // for future entries.
       getSubcategories: (category) => {
         const { settings, transactions } = get()
-        const fromSettings = settings.customSubcategories[category] || []
+        const fromSettings = settings.categories.find((c) => c.name === category)?.subcategories ?? []
         const fromHistory = transactions
           .filter((t) => t.type === 'expense' && t.primaryCategory === category && t.secondaryCategory)
           .map((t) => t.secondaryCategory as string)
         return [...new Set([...fromSettings, ...fromHistory])]
+      },
+
+      // Adopt one of the built-in taxonomies wholesale. Used at onboarding and by the
+      // "cambia set di categorie" control; existing transactions keep their category
+      // names, and importData() re-adds any that the new set doesn't cover.
+      applyCategorySet: async (setId) => {
+        const preset = getCategorySet(setId)
+        const categories = preset.categories.map((c) => ({ ...c, subcategories: [...c.subcategories] }))
+
+        // Keep any category the existing history still uses. Dropping it would make
+        // those expenses vanish from the charts and totals, which iterate the category
+        // list rather than the transactions.
+        const names = new Set(categories.map((c) => c.name))
+        const stillUsed = new Map<string, CategoryDef>()
+        for (const t of get().transactions) {
+          if (t.type !== 'expense' || !t.primaryCategory || names.has(t.primaryCategory)) continue
+          if (!stillUsed.has(t.primaryCategory)) {
+            const previous = get().settings.categories.find((c) => c.name === t.primaryCategory)
+            stillUsed.set(t.primaryCategory, previous ?? { name: t.primaryCategory, icon: '📦', color: '#94a3b8', subcategories: [] })
+          }
+        }
+        categories.push(...stillUsed.values())
+
+        await dbOperations.setCategories(categories, preset.id)
+        await dbOperations.setSyncMeta('settingsUpdatedAt', Date.now())
+        set((state) => ({ settings: { ...state.settings, categories, categorySetId: preset.id } }))
+        scheduleSync()
+      },
+
+      setCategories: async (categories) => {
+        await dbOperations.setCategories(categories)
+        await dbOperations.setSyncMeta('settingsUpdatedAt', Date.now())
+        set((state) => ({ settings: { ...state.settings, categories } }))
+        scheduleSync()
       },
 
       addRecurringRule: async (ruleData) => {
@@ -621,7 +689,7 @@ export const useStore = create<FinanceState>()(
           .map(([name, value]) => ({
             name,
             value,
-            color: CATEGORY_COLORS[name as PrimaryCategory],
+            color: colorOf(get().settings.categories, name),
             percentage: total > 0 ? (value / total) * 100 : 0
           }))
           .sort((a, b) => b.value - a.value)
@@ -648,8 +716,32 @@ export const useStore = create<FinanceState>()(
       },
 
       importData: async (data) => {
-        if (data.transactions) {
+        // Any category the imported history uses but this account doesn't have yet is
+        // added rather than dropped — that is what makes importing a backup from a
+        // differently-configured app lossless.
+        const known = new Set(get().settings.categories.map((c) => c.name))
+        const addedCategories: string[] = []
+        for (const t of data.transactions ?? []) {
+          if (t.type === 'expense' && t.primaryCategory && !known.has(t.primaryCategory)) {
+            known.add(t.primaryCategory)
+            addedCategories.push(t.primaryCategory)
+          }
+        }
+        if (addedCategories.length > 0) {
+          const palette = ['#64748b', '#94a3b8', '#a1a1aa', '#cbd5e1']
+          const extra: CategoryDef[] = addedCategories.map((name, i) => ({
+            name,
+            icon: '📦',
+            color: palette[i % palette.length],
+            subcategories: []
+          }))
+          await get().setCategories([...get().settings.categories, ...extra])
+        }
+
+        let imported = 0
+        if (data.transactions && data.transactions.length > 0) {
           await dbOperations.importTransactions(data.transactions)
+          imported = data.transactions.length
           set((state) => ({
             transactions: [...data.transactions!, ...state.transactions].sort(
               (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
@@ -664,7 +756,14 @@ export const useStore = create<FinanceState>()(
             savingGoals: [...state.savingGoals, ...data.savingGoals!]
           }))
         }
+        if (data.recurringRules) {
+          for (const rule of data.recurringRules) {
+            await dbOperations.putRecurringRuleRaw(rule)
+          }
+          set((state) => ({ recurringRules: [...state.recurringRules, ...data.recurringRules!] }))
+        }
         scheduleSync()
+        return { imported, addedCategories }
       },
 
       exportData: async () => {

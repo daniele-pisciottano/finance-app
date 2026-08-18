@@ -19,7 +19,8 @@ import {
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useStore } from '@/store/useStore'
-import { PRIMARY_CATEGORIES, CATEGORY_ICONS, INCOME_TYPES, type PrimaryCategory, type IncomeType, type Transaction } from '@/types'
+import { INCOME_TYPES, type PrimaryCategory, type IncomeType, type Transaction } from '@/types'
+import { useCategories } from '@/lib/categories'
 import { cn } from '@/lib/utils'
 
 interface TransactionFormProps {
@@ -29,6 +30,9 @@ interface TransactionFormProps {
 }
 
 export function TransactionForm({ open, onOpenChange, editTransaction }: TransactionFormProps) {
+  const { categories, names, hasSubcategories } = useCategories()
+  // A dozen icon tiles read well; thirty do not — fall back to a list past that.
+  const useIconGrid = names.length <= 16
   const { addTransaction, updateTransaction, settings, getSubcategories, getMerchantMemory } = useStore()
   const isEditing = !!editTransaction
   const [type, setType] = useState<'expense' | 'income'>('expense')
@@ -218,31 +222,46 @@ export function TransactionForm({ open, onOpenChange, editTransaction }: Transac
               {/* Primary Category */}
               <div className="space-y-2">
                 <Label>Categoria</Label>
-                <div className="grid grid-cols-4 gap-2">
-                  {PRIMARY_CATEGORIES.map((cat) => (
-                    <button
-                      key={cat}
-                      type="button"
-                      onClick={() => setPrimaryCategory(cat)}
-                      className={cn(
-                        "flex flex-col items-center justify-center p-2 rounded-lg border-2 transition-all",
-                        "hover:border-primary hover:bg-accent",
-                        primaryCategory === cat
-                          ? "border-primary bg-accent"
-                          : "border-transparent bg-muted"
-                      )}
-                    >
-                      <span className="text-xl">{CATEGORY_ICONS[cat]}</span>
-                      <span className="text-[10px] mt-1 text-center leading-tight">
-                        {cat}
-                      </span>
-                    </button>
-                  ))}
-                </div>
+                {useIconGrid ? (
+                  <div className="grid grid-cols-4 gap-2">
+                    {categories.map((cat) => (
+                      <button
+                        key={cat.name}
+                        type="button"
+                        onClick={() => setPrimaryCategory(cat.name)}
+                        className={cn(
+                          "flex flex-col items-center justify-center p-2 rounded-lg border-2 transition-all",
+                          "hover:border-primary hover:bg-accent",
+                          primaryCategory === cat.name
+                            ? "border-primary bg-accent"
+                            : "border-transparent bg-muted"
+                        )}
+                      >
+                        <span className="text-xl">{cat.icon}</span>
+                        <span className="text-[10px] mt-1 text-center leading-tight">
+                          {cat.name}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <Select value={primaryCategory} onValueChange={(v) => setPrimaryCategory(v)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Seleziona categoria" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {categories.map((cat) => (
+                        <SelectItem key={cat.name} value={cat.name}>
+                          {cat.icon} {cat.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
 
-              {/* Secondary Category */}
-              {primaryCategory && (
+              {/* Secondary Category — hidden on accounts that use a single level */}
+              {primaryCategory && hasSubcategories && (
                 <div className="space-y-2">
                   <Label>Sottocategoria</Label>
                   <Select

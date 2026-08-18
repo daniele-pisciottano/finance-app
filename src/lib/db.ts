@@ -1,6 +1,15 @@
 import Dexie, { type EntityTable } from 'dexie'
-import type { Transaction, SavingGoal, UserSettings, RecurringRule, Tombstone } from '@/types'
-import { DEFAULT_SUBCATEGORIES, type PrimaryCategory } from '@/types'
+import type {
+  Transaction,
+  SavingGoal,
+  UserSettings,
+  RecurringRule,
+  Tombstone,
+  CaptureSettings,
+  CategoryDef,
+  PrimaryCategory
+} from '@/types'
+import { DEFAULT_CATEGORY_SET_ID, getCategorySet } from '@/lib/categoryPresets'
 
 // Simple key/value row for local sync bookkeeping (e.g. lastPulledAt).
 interface SyncMeta {
@@ -42,12 +51,79 @@ db.version(3).stores({
   syncMeta: 'key'
 })
 
+function cloneCategories(categories: CategoryDef[]): CategoryDef[] {
+  return categories.map((c) => ({ ...c, subcategories: [...c.subcategories] }))
+}
+
+// Fresh accounts trust the "Joint ·" marker Revolut puts in the notification title to
+// decide whether a payment is shared.
+const DEFAULT_CAPTURE: CaptureSettings = {
+  sources: { intesa: true, revolut: true, paypal: true, satispay: true, youalert: true },
+  revolutSplit: 'joint-only',
+  paypalDuplicateWarning: true,
+  depositAmounts: [103.29]
+}
+
+// Accounts that predate CaptureSettings were halving *every* Revolut payment; keep
+// doing that for them rather than silently changing recorded amounts.
+const LEGACY_CAPTURE: CaptureSettings = { ...DEFAULT_CAPTURE, revolutSplit: 'always' }
+
 // Default settings
 const DEFAULT_SETTINGS: UserSettings = {
   darkMode: false,
   currency: 'EUR',
   defaultSavingGoal: 300,
-  customSubcategories: { ...DEFAULT_SUBCATEGORIES }
+  categorySetId: DEFAULT_CATEGORY_SET_ID,
+  onboarded: false,
+  categories: cloneCategories(getCategorySet(DEFAULT_CATEGORY_SET_ID).categories),
+  capture: { ...DEFAULT_CAPTURE }
+}
+
+export function defaultSettings(): UserSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    categories: cloneCategories(DEFAULT_SETTINGS.categories),
+    capture: { ...DEFAULT_CAPTURE, sources: { ...DEFAULT_CAPTURE.sources }, depositAmounts: [...DEFAULT_CAPTURE.depositAmounts] }
+  }
+}
+
+// Bring a stored (possibly older) settings object up to the current shape. Older rows
+// carried the taxonomy implicitly plus a `customSubcategories` map; rebuild the explicit
+// category list from the preset they were using so nothing the user added is lost.
+export function normalizeSettings(raw: Partial<UserSettings> | undefined): UserSettings {
+  const base = defaultSettings()
+  if (!raw) return base
+
+  const categorySetId = raw.categorySetId ?? DEFAULT_CATEGORY_SET_ID
+  let categories = raw.categories && raw.categories.length > 0 ? cloneCategories(raw.categories) : null
+  if (!categories) {
+    const preset = getCategorySet(categorySetId)
+    categories = preset.categories.map((c) => ({
+      ...c,
+      subcategories: [...(raw.customSubcategories?.[c.name] ?? c.subcategories)]
+    }))
+  }
+
+  const capture = raw.capture
+    ? {
+        ...LEGACY_CAPTURE,
+        ...raw.capture,
+        sources: { ...LEGACY_CAPTURE.sources, ...raw.capture.sources },
+        depositAmounts: raw.capture.depositAmounts ?? [...LEGACY_CAPTURE.depositAmounts]
+      }
+    : { ...LEGACY_CAPTURE, sources: { ...LEGACY_CAPTURE.sources }, depositAmounts: [...LEGACY_CAPTURE.depositAmounts] }
+
+  return {
+    darkMode: raw.darkMode ?? base.darkMode,
+    currency: raw.currency ?? base.currency,
+    defaultSavingGoal: raw.defaultSavingGoal ?? base.defaultSavingGoal,
+    categorySetId,
+    // A row written before this field existed belongs to an account that has been in
+    // use for a while — never send it back through setup.
+    onboarded: raw.onboarded ?? raw.categories === undefined,
+    categories,
+    capture
+  }
 }
 
 // Database operations
@@ -117,7 +193,9 @@ export const dbOperations = {
   async setSavingGoal(goal: SavingGoal): Promise<string> {
     const existing = await db.savingGoals.where('month').equals(goal.month).first()
     if (existing) {
-      await db.savingGoals.update(existing.id, goal)
+      // put, not update: the goal's category budgets are an open-ended map, which
+      // Dexie's UpdateSpec cannot express.
+      await db.savingGoals.put({ ...goal, id: existing.id })
       return existing.id
     }
     return db.savingGoals.add(goal)
@@ -133,13 +211,20 @@ export const dbOperations = {
 
   // Settings
   async getSettings(): Promise<UserSettings> {
-    const settings = await db.settings.get('user-settings')
-    if (!settings) {
-      await db.settings.add({ id: 'user-settings', ...DEFAULT_SETTINGS })
-      return DEFAULT_SETTINGS
+    const stored = await db.settings.get('user-settings')
+    if (!stored) {
+      const fresh = defaultSettings()
+      await db.settings.add({ id: 'user-settings', ...fresh })
+      return fresh
     }
-    const { id: _id, ...rest } = settings
-    return rest
+    const { id: _id, ...rest } = stored
+    const normalized = normalizeSettings(rest)
+    // Write the upgraded shape back once, so later reads are cheap and the next sync
+    // pushes the explicit taxonomy to the other devices.
+    if (!rest.categories || !rest.capture) {
+      await db.settings.put({ id: 'user-settings', ...normalized })
+    }
+    return normalized
   },
 
   async updateSettings(updates: Partial<UserSettings>): Promise<void> {
@@ -147,17 +232,23 @@ export const dbOperations = {
     await db.settings.put({ id: 'user-settings', ...current, ...updates })
   },
 
+  // Replace the whole taxonomy (preset switch / import). Marks the account as 'custom'
+  // only when the caller says so — a plain preset switch keeps the preset id, which is
+  // what the tag→category mapping for auto-capture keys off.
+  async setCategories(categories: CategoryDef[], categorySetId?: string): Promise<void> {
+    const updates: Partial<UserSettings> = { categories: cloneCategories(categories) }
+    if (categorySetId) updates.categorySetId = categorySetId
+    await this.updateSettings(updates)
+  },
+
   async addCustomSubcategory(category: PrimaryCategory, subcategory: string): Promise<void> {
     const settings = await this.getSettings()
-    const currentSubs = settings.customSubcategories[category] || []
-    if (!currentSubs.includes(subcategory)) {
-      await this.updateSettings({
-        customSubcategories: {
-          ...settings.customSubcategories,
-          [category]: [...currentSubs, subcategory]
-        }
-      })
-    }
+    const categories = settings.categories.map((c) =>
+      c.name === category && !c.subcategories.includes(subcategory)
+        ? { ...c, subcategories: [...c.subcategories, subcategory] }
+        : c
+    )
+    await this.updateSettings({ categories })
   },
 
   // --- Sync support -------------------------------------------------------
@@ -198,7 +289,8 @@ export const dbOperations = {
     await db.recurringRules.put(r)
   },
   async putSettingsRaw(settings: UserSettings): Promise<void> {
-    await db.settings.put({ id: 'user-settings', ...settings })
+    // Remote payloads can come from a device still on the old shape.
+    await db.settings.put({ id: 'user-settings', ...normalizeSettings(settings) })
   },
   async deleteRecordRaw(collection: Tombstone['collection'], id: string): Promise<void> {
     if (collection === 'transactions') await db.transactions.delete(id)
@@ -208,7 +300,8 @@ export const dbOperations = {
 
   // Bulk operations for import
   async importTransactions(transactions: Transaction[]): Promise<void> {
-    await db.transactions.bulkAdd(transactions)
+    // bulkPut: re-importing a backup that overlaps existing data updates instead of throwing
+    await db.transactions.bulkPut(transactions)
   },
 
   async clearAllData(): Promise<void> {

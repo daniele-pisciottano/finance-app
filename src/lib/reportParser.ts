@@ -1,6 +1,7 @@
 import { strFromU8 } from 'fflate'
 import { readXlsx, excelSerialToDate, type Cell } from '@/lib/xlsx'
-import { guessCategory, parseAmountFlexible } from '@/lib/notificationParser'
+import { guessTag, parseAmountFlexible } from '@/lib/notificationParser'
+import type { MerchantTag } from '@/types'
 
 // --- CSV support ---------------------------------------------------------
 function detectDelimiter(text: string): string {
@@ -70,8 +71,8 @@ export interface ReportTransaction {
   merchant: string
   source: ReportSource
   rawCategory?: string
-  primaryCategory?: string
-  secondaryCategory?: string
+  // Taxonomy-neutral hint; the caller maps it onto the account's own categories.
+  tag?: MerchantTag
   halved: boolean
   flags: string[] // e.g. 'paypal'
 }
@@ -87,29 +88,29 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100
 }
 
-// Intesa's own category -> app category.
-const INTESA_CATEGORY_MAP: Record<string, { p: string; s?: string }> = {
-  'generi alimentari e supermercati': { p: 'Groceries' },
-  'ristoranti e bar': { p: 'Out' },
-  'carburanti': { p: 'Transport', s: 'Fuel' },
-  'corsi e sport': { p: 'Health', s: 'Sport' },
-  'cellulare': { p: 'Housing', s: 'Phone' },
-  'libri, film e musica': { p: 'Leisure' },
-  'tempo libero varie': { p: 'Leisure' },
-  'abbigliamento e accessori': { p: 'Clothing' },
-  'cura della persona': { p: 'Health' },
-  'salute e benessere': { p: 'Health' },
-  'regali': { p: 'Gifts' },
-  'donazioni': { p: 'Gifts' },
-  'pagamento affitti': { p: 'Housing', s: 'Rent' },
-  'tabaccai e simili': { p: 'OtherExpenses' },
-  'viaggi e vacanze': { p: 'Travel' }
+// Intesa's own category -> semantic tag (never a category name: the account's set
+// decides where each tag lands).
+const INTESA_TAG_MAP: Record<string, MerchantTag> = {
+  'generi alimentari e supermercati': 'groceries',
+  'ristoranti e bar': 'restaurant',
+  'carburanti': 'fuel',
+  'corsi e sport': 'sport',
+  'cellulare': 'phone',
+  'libri, film e musica': 'leisure',
+  'tempo libero varie': 'leisure',
+  'abbigliamento e accessori': 'clothing',
+  'cura della persona': 'beauty',
+  'salute e benessere': 'health',
+  'regali': 'gift',
+  'donazioni': 'gift',
+  'pagamento affitti': 'home',
+  'viaggi e vacanze': 'travel'
 }
 
-function mapIntesaCategory(cat: string): { p: string; s?: string } | null {
+function mapIntesaCategory(cat: string): MerchantTag | null {
   const key = cat.trim().toLowerCase()
-  if (INTESA_CATEGORY_MAP[key]) return INTESA_CATEGORY_MAP[key]
-  if (key.startsWith('trasporti')) return { p: 'Transport' }
+  if (INTESA_TAG_MAP[key]) return INTESA_TAG_MAP[key]
+  if (key.startsWith('trasporti')) return 'transport'
   return null
 }
 
@@ -117,14 +118,21 @@ function s(cell: Cell): string {
   return cell == null ? '' : String(cell).trim()
 }
 
-export function parseReport(data: Uint8Array): ParsedReport {
+export interface ParseReportOptions {
+  // Revolut CSV exports carry no account marker, so whether to record only your share
+  // is a per-account decision the caller passes in.
+  halveRevolut?: boolean
+}
+
+export function parseReport(data: Uint8Array, options: ParseReportOptions = {}): ParsedReport {
+  const halveRevolut = options.halveRevolut ?? true
   // .xlsx files are ZIP archives (start with "PK"); anything else is treated as CSV.
   const isZip = data[0] === 0x50 && data[1] === 0x4b
   const rows = isZip ? readXlsx(data) : parseCsv(strFromU8(data))
 
   const header0 = (rows[0] || []).map((c) => s(c).toLowerCase())
   if (header0.includes('type') && header0.includes('amount') && header0.some((h) => h.includes('description'))) {
-    return parseRevolut(rows)
+    return parseRevolut(rows, halveRevolut)
   }
 
   const hi = rows.findIndex((r) => {
@@ -136,7 +144,7 @@ export function parseReport(data: Uint8Array): ParsedReport {
   return { source: 'unknown', transactions: [], ignoredCount: 0, totalRows: rows.length }
 }
 
-function parseRevolut(rows: Cell[][]): ParsedReport {
+function parseRevolut(rows: Cell[][], halveRevolut: boolean): ParsedReport {
   const h = rows[0].map((c) => s(c).toLowerCase())
   const iDesc = h.indexOf('description')
   const iAmt = h.indexOf('amount')
@@ -155,16 +163,14 @@ function parseRevolut(rows: Cell[][]): ParsedReport {
     const merchant = s(row[iDesc])
     const date = cellToDate(row[iDate])
     const rawAmount = Math.abs(amount)
-    const g = guessCategory(merchant)
     transactions.push({
       date,
-      amount: round2(rawAmount / 2), // joint account: record your 50%
+      amount: halveRevolut ? round2(rawAmount / 2) : rawAmount,
       rawAmount,
       merchant,
       source: 'revolut',
-      primaryCategory: g?.primaryCategory,
-      secondaryCategory: g?.secondaryCategory,
-      halved: true,
+      tag: guessTag(merchant) ?? undefined,
+      halved: halveRevolut,
       flags: []
     })
   }
@@ -207,16 +213,7 @@ function parseIntesa(rows: Cell[][], hi: number): ParsedReport {
     const merchant = genericOp && detIsMerchant ? dettagli : op
 
     const mapped = mapIntesaCategory(cat)
-    let primaryCategory: string | undefined
-    let secondaryCategory: string | undefined
-    if (mapped) {
-      primaryCategory = mapped.p
-      secondaryCategory = mapped.s
-    } else {
-      const g = guessCategory(`${op} ${dettagli}`)
-      primaryCategory = g?.primaryCategory
-      secondaryCategory = g?.secondaryCategory
-    }
+    const tag = mapped ?? guessTag(`${op} ${dettagli}`) ?? undefined
     const flags: string[] = []
     if (/paypal/i.test(op)) flags.push('paypal')
     transactions.push({
@@ -226,8 +223,7 @@ function parseIntesa(rows: Cell[][], hi: number): ParsedReport {
       merchant,
       source: 'intesa',
       rawCategory: cat || undefined,
-      primaryCategory,
-      secondaryCategory,
+      tag,
       halved: false,
       flags
     })

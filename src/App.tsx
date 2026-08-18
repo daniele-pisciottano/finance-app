@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { Plus, LayoutDashboard, BarChart3, Settings as SettingsIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dashboard } from '@/components/Dashboard'
@@ -6,8 +6,10 @@ import { Analytics } from '@/components/Analytics'
 import { Settings } from '@/components/Settings'
 import { TransactionForm } from '@/components/TransactionForm'
 import { Auth } from '@/components/Auth'
+import { Onboarding } from '@/components/Onboarding'
 import { useStore } from '@/store/useStore'
 import { useAuthStore } from '@/store/authStore'
+import { getSyncStatus, subscribeSync } from '@/lib/sync'
 import { cn } from '@/lib/utils'
 import type { Transaction } from '@/types'
 
@@ -23,7 +25,7 @@ function Loading() {
 }
 
 function App() {
-  const { initialize, isLoading, initialized, activeTab, setActiveTab, settings } = useStore()
+  const { initialize, isLoading, initialized, activeTab, setActiveTab, settings, transactions } = useStore()
   const { configured, session, loading: authLoading, init: authInit } = useAuthStore()
   const [formOpen, setFormOpen] = useState(false)
   const [editTransaction, setEditTransaction] = useState<Transaction | undefined>(undefined)
@@ -38,6 +40,12 @@ function App() {
     if (!open) setEditTransaction(undefined)
   }
 
+  const syncStatus = useSyncExternalStore(
+    subscribeSync,
+    () => getSyncStatus().status,
+    () => getSyncStatus().status
+  )
+
   useEffect(() => {
     authInit()
   }, [authInit])
@@ -45,6 +53,14 @@ function App() {
   useEffect(() => {
     initialize()
   }, [initialize])
+
+  // Never block the first render on sync forever: if it hasn't reported anything after
+  // a few seconds (offline, auth still settling), carry on without it.
+  const [syncGraceOver, setSyncGraceOver] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => setSyncGraceOver(true), 6000)
+    return () => clearTimeout(t)
+  }, [])
 
   // Apply theme on mount and when settings change
   useEffect(() => {
@@ -58,6 +74,14 @@ function App() {
   if (configured && !session) return <Auth />
 
   if (isLoading || !initialized) return <Loading />
+
+  // First run on a fresh account: choose a category set (and optionally restore a
+  // backup) before anything else. Signing in on a *second* device also starts empty,
+  // so wait for the first sync to settle — otherwise the setup screen would overwrite
+  // the taxonomy this account already has in the cloud.
+  const awaitingFirstSync = configured && !!session && syncStatus === 'idle' && !syncGraceOver
+  if (awaitingFirstSync) return <Loading />
+  if (!settings.onboarded && transactions.length === 0) return <Onboarding />
 
   return (
     <div className="min-h-screen bg-background">

@@ -14,7 +14,8 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { useStore } from '@/store/useStore'
 import { formatCurrency } from '@/lib/utils'
-import { CATEGORY_ICONS, PRIMARY_CATEGORIES, type Transaction } from '@/types'
+import type { Transaction } from '@/types'
+import { useCategories } from '@/lib/categories'
 import { cn } from '@/lib/utils'
 
 interface TransactionListProps {
@@ -24,6 +25,7 @@ interface TransactionListProps {
 }
 
 export function TransactionList({ limit, showFilters = false, onEdit }: TransactionListProps) {
+  const { names, icon } = useCategories()
   const { transactions, deleteTransaction, currentMonth } = useStore()
   const [typeFilter, setTypeFilter] = useState<'all' | 'expense' | 'income'>('all')
   const [categoryFilter, setCategoryFilter] = useState<string>('all')
@@ -109,9 +111,9 @@ export function TransactionList({ limit, showFilters = false, onEdit }: Transact
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Tutte le categorie</SelectItem>
-              {PRIMARY_CATEGORIES.map((cat) => (
+              {names.map((cat) => (
                 <SelectItem key={cat} value={cat}>
-                  {CATEGORY_ICONS[cat]} {cat}
+                  {icon(cat)} {cat}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -145,6 +147,7 @@ interface TransactionItemProps {
 }
 
 function TransactionItem({ transaction, expanded, onToggle, onDelete, onEdit }: TransactionItemProps) {
+  const { icon } = useCategories()
   const isExpense = transaction.type === 'expense'
 
   return (
@@ -165,7 +168,7 @@ function TransactionItem({ transaction, expanded, onToggle, onDelete, onEdit }: 
         )}>
           {isExpense ? (
             transaction.primaryCategory ? (
-              <span className="text-lg">{CATEGORY_ICONS[transaction.primaryCategory]}</span>
+              <span className="text-lg">{icon(transaction.primaryCategory)}</span>
             ) : (
               <TrendingDown className="h-5 w-5 text-destructive" />
             )
@@ -235,7 +238,7 @@ function TransactionItem({ transaction, expanded, onToggle, onDelete, onEdit }: 
               <>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Categoria</span>
-                  <span>{CATEGORY_ICONS[transaction.primaryCategory!]} {transaction.primaryCategory}</span>
+                  <span>{icon(transaction.primaryCategory)} {transaction.primaryCategory}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Sottocategoria</span>

@@ -12,12 +12,16 @@ import {
 } from '@/components/ui/select'
 import { useStore } from '@/store/useStore'
 import { formatCurrency } from '@/lib/utils'
-import { CATEGORY_ICONS, type Transaction } from '@/types'
+import type { Transaction } from '@/types'
+import { useCategories } from '@/lib/categories'
+import { resolveTag } from '@/lib/categoryPresets'
 
 const SOURCE_LABELS: Record<string, string> = {
   intesa: 'Intesa Sanpaolo',
   revolut: 'Revolut',
   paypal: 'PayPal',
+  satispay: 'Satispay',
+  youalert: 'YOUALERT',
   manual: 'Manuale',
   unknown: 'Sconosciuto'
 }
@@ -27,17 +31,28 @@ interface DraftsCardProps {
 }
 
 export function DraftsCard({ onEdit }: DraftsCardProps) {
-  const { getDrafts, confirmDraft, deleteTransaction, addDraftFromText, transactions, getMerchantMemory } = useStore()
+  const { icon } = useCategories()
+  const { getDrafts, confirmDraft, deleteTransaction, addDraftFromText, transactions, getMerchantMemory, settings } = useStore()
   const drafts = getDrafts()
 
-  // Effective category = the draft's own, or the one remembered for this place.
+  // Effective category = the draft's own, or the one remembered for this place, or the
+  // parser's semantic tag mapped onto this account's categories. Drafts captured by the
+  // ingest endpoint carry only the tag: the server has no idea what categories this
+  // account uses, so the resolution happens here.
   const effectiveCategory = (d: Transaction) => {
     if (d.primaryCategory) return { primaryCategory: d.primaryCategory, secondaryCategory: d.secondaryCategory }
     const mem = d.capturedMerchant ? getMerchantMemory(d.capturedMerchant) : null
-    return mem?.primaryCategory
-      ? { primaryCategory: mem.primaryCategory, secondaryCategory: mem.secondaryCategory }
-      : null
+    if (mem?.primaryCategory) {
+      return { primaryCategory: mem.primaryCategory, secondaryCategory: mem.secondaryCategory }
+    }
+    return resolveTag(settings.categorySetId, d.capturedTag, settings.categories)
   }
+
+  // Flagged at capture time, but also re-evaluated live so editing the list of deposit
+  // amounts in Impostazioni immediately re-marks drafts already sitting here.
+  const isDeposit = (d: Transaction) =>
+    d.possibleDeposit === true ||
+    settings.capture.depositAmounts.some((a) => Math.round(a * 100) === Math.round(d.amount * 100))
 
   // A draft looks like a duplicate if a confirmed expense with the same amount exists
   // within ±3 days (e.g. a PayPal charge later re-billed by Intesa).
@@ -97,7 +112,7 @@ export function DraftsCard({ onEdit }: DraftsCardProps) {
           <div key={d.id} className="border rounded-lg p-3">
             <div className="flex items-center gap-3">
               <span className="text-xl shrink-0">
-                {eff ? CATEGORY_ICONS[eff.primaryCategory] : '❓'}
+                {eff ? icon(eff.primaryCategory) : '❓'}
               </span>
               <div className="flex-1 min-w-0">
                 <div className="font-medium truncate">{d.description || 'Spesa senza descrizione'}</div>
@@ -122,6 +137,16 @@ export function DraftsCard({ onEdit }: DraftsCardProps) {
               <div className="mt-2 text-xs text-warning flex items-center gap-1">
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                 Possibile doppione (stesso importo di recente) — verifica prima di confermare.
+              </div>
+            )}
+
+            {isDeposit(d) && (
+              <div className="mt-2 text-xs text-warning flex items-start gap-1">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px" />
+                <span>
+                  Probabile cauzione, non una spesa: al distributore la carta blocca un
+                  importo fisso che poi viene rilasciato. Se è questo il caso, elimina la bozza.
+                </span>
               </div>
             )}
 

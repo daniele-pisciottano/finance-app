@@ -6,7 +6,7 @@ import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
 import { useStore } from '@/store/useStore'
 import { formatCurrency, formatPercentage, getMonthName } from '@/lib/utils'
-import { CATEGORY_ICONS } from '@/types'
+import { useCategories } from '@/lib/categories'
 import { CategoryChart } from '@/components/CategoryChart'
 import { TransactionList } from '@/components/TransactionList'
 import { DraftsCard } from '@/components/DraftsCard'
@@ -16,6 +16,7 @@ interface DashboardProps {
 }
 
 export function Dashboard({ onEditTransaction }: DashboardProps) {
+  const { icon } = useCategories()
   const {
     currentMonth,
     setCurrentMonth,
@@ -328,7 +329,7 @@ export function Dashboard({ onEditTransaction }: DashboardProps) {
                 )}
                 <div className="flex-1">
                   {alert.category && (
-                    <span className="mr-1">{CATEGORY_ICONS[alert.category]}</span>
+                    <span className="mr-1">{icon(alert.category)}</span>
                   )}
                   {alert.message}
                 </div>
