@@ -180,7 +180,13 @@ export function parseNotification(text: string, options: ParseOptions = {}): Par
   // Applied once at the end of every branch so no source can forget it.
   const finish = (result: ParsedExpense): ParsedExpense => {
     result.tag = guessTag(result.merchant)
-    if (result.isPayment && isDepositAmount(result.amount, rules.depositAmounts ?? [])) {
+    // Check the amount as it was read too: a hold on a joint Revolut card is halved
+    // before it gets here, so only the raw figure still matches the known amount.
+    const deposits = rules.depositAmounts ?? []
+    if (
+      result.isPayment &&
+      (isDepositAmount(result.amount, deposits) || isDepositAmount(result.rawAmount, deposits))
+    ) {
       result.possibleDeposit = true
       const depositNote =
         'Importo tipico di una cauzione (es. il blocco al distributore): controlla prima di confermare'

@@ -378,14 +378,22 @@ export const useStore = create<FinanceState>()(
       confirmDraft: async (id) => {
         // If the draft still has no category, try the intelligent history one last time.
         const draft = get().transactions.find((t) => t.id === id)
-        const updates: Partial<Transaction> = { draft: false, possibleDuplicate: false }
-        if (draft && !draft.primaryCategory && draft.capturedMerchant) {
-          const memory = get().getMerchantMemory(draft.capturedMerchant)
+        const updates: Partial<Transaction> = { draft: false, possibleDuplicate: false, possibleDeposit: false }
+        if (draft && !draft.primaryCategory) {
+          const memory = draft.capturedMerchant ? get().getMerchantMemory(draft.capturedMerchant) : null
           if (memory?.primaryCategory) {
             updates.primaryCategory = memory.primaryCategory
             updates.secondaryCategory = memory.secondaryCategory
             if (memory.description && (!draft.description || draft.description === draft.capturedMerchant)) {
               updates.description = memory.description
+            }
+          } else {
+            // Captured by the ingest endpoint, which stores a taxonomy-neutral tag.
+            const { settings } = get()
+            const fromTag = resolveTag(settings.categorySetId, draft.capturedTag, settings.categories)
+            if (fromTag) {
+              updates.primaryCategory = fromTag.primaryCategory
+              updates.secondaryCategory = fromTag.secondaryCategory
             }
           }
         }
@@ -458,6 +466,21 @@ export const useStore = create<FinanceState>()(
       applyCategorySet: async (setId) => {
         const preset = getCategorySet(setId)
         const categories = preset.categories.map((c) => ({ ...c, subcategories: [...c.subcategories] }))
+
+        // Keep any category the existing history still uses. Dropping it would make
+        // those expenses vanish from the charts and totals, which iterate the category
+        // list rather than the transactions.
+        const names = new Set(categories.map((c) => c.name))
+        const stillUsed = new Map<string, CategoryDef>()
+        for (const t of get().transactions) {
+          if (t.type !== 'expense' || !t.primaryCategory || names.has(t.primaryCategory)) continue
+          if (!stillUsed.has(t.primaryCategory)) {
+            const previous = get().settings.categories.find((c) => c.name === t.primaryCategory)
+            stillUsed.set(t.primaryCategory, previous ?? { name: t.primaryCategory, icon: '📦', color: '#94a3b8', subcategories: [] })
+          }
+        }
+        categories.push(...stillUsed.values())
+
         await dbOperations.setCategories(categories, preset.id)
         await dbOperations.setSyncMeta('settingsUpdatedAt', Date.now())
         set((state) => ({ settings: { ...state.settings, categories, categorySetId: preset.id } }))

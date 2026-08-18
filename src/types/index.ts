@@ -137,6 +137,9 @@ export interface UserSettings {
   defaultSavingGoal: number
   // Which preset this account started from ('custom' once edited beyond a preset).
   categorySetId: string
+  // False until the account has chosen a category set (and optionally restored a
+  // backup). Drives the one-time setup screen.
+  onboarded: boolean
   // The account's own taxonomy — the single source of truth for the whole UI.
   categories: CategoryDef[]
   capture: CaptureSettings

@@ -74,6 +74,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   currency: 'EUR',
   defaultSavingGoal: 300,
   categorySetId: DEFAULT_CATEGORY_SET_ID,
+  onboarded: false,
   categories: cloneCategories(getCategorySet(DEFAULT_CATEGORY_SET_ID).categories),
   capture: { ...DEFAULT_CAPTURE }
 }
@@ -117,6 +118,9 @@ export function normalizeSettings(raw: Partial<UserSettings> | undefined): UserS
     currency: raw.currency ?? base.currency,
     defaultSavingGoal: raw.defaultSavingGoal ?? base.defaultSavingGoal,
     categorySetId,
+    // A row written before this field existed belongs to an account that has been in
+    // use for a while — never send it back through setup.
+    onboarded: raw.onboarded ?? raw.categories === undefined,
     categories,
     capture
   }

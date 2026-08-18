@@ -21,6 +21,9 @@ import { dbOperations } from '@/lib/db'
 import { RecurringRulesManager } from '@/components/RecurringRulesManager'
 import { SyncAccount } from '@/components/SyncAccount'
 import { Reconciliation } from '@/components/Reconciliation'
+import { CategorySettings } from '@/components/CategorySettings'
+import { CaptureSettings } from '@/components/CaptureSettings'
+import { parseBackup } from '@/lib/backupImport'
 
 // Generate list of months for selection (current year and previous year)
 function generateMonthOptions(): { value: string; label: string }[] {
@@ -152,23 +155,25 @@ export function Settings() {
     if (!file) return
 
     try {
-      const text = await file.text()
-      const data = JSON.parse(text)
+      const parsed = parseBackup(JSON.parse(await file.text()))
 
-      if (data.transactions && Array.isArray(data.transactions)) {
-        // Validate transactions before import
-        const validTransactions = data.transactions.filter((t: Transaction) =>
-          t.id && t.type && t.date && typeof t.amount === 'number'
-        )
-
-        if (validTransactions.length > 0) {
-          await importData({ transactions: validTransactions })
-          alert(`Importate ${validTransactions.length} transazioni con successo!`)
-        } else {
-          alert('Nessuna transazione valida trovata nel file.')
-        }
-      } else {
+      if (!parsed) {
         alert('Formato file non valido. Assicurati che sia un backup JSON valido.')
+      } else if (parsed.transactions.length === 0) {
+        alert('Nessuna transazione valida trovata nel file.')
+      } else {
+        const { addedCategories } = await importData({
+          transactions: parsed.transactions,
+          savingGoals: parsed.savingGoals,
+          recurringRules: parsed.recurringRules
+        })
+        const lines = [`Importate ${parsed.transactions.length} transazioni.`]
+        if (parsed.savingGoals.length > 0) lines.push(`${parsed.savingGoals.length} obiettivi di risparmio.`)
+        if (parsed.skipped > 0) lines.push(`${parsed.skipped} righe illeggibili saltate.`)
+        if (addedCategories.length > 0) {
+          lines.push(`Aggiunte ${addedCategories.length} categorie nuove: ${addedCategories.join(', ')}.`)
+        }
+        alert(lines.join('\n'))
       }
     } catch (error) {
       console.error('Import failed:', error)
@@ -376,6 +381,9 @@ export function Settings() {
         </CardContent>
       </Card>
 
+      {/* Categories: the account's own taxonomy */}
+      <CategorySettings />
+
       {/* Subcategories */}
       <Card>
         <CardHeader>
@@ -426,6 +434,9 @@ export function Settings() {
           )}
         </CardContent>
       </Card>
+
+      {/* Auto-capture rules */}
+      <CaptureSettings />
 
       {/* Recurring expenses */}
       <RecurringRulesManager />
