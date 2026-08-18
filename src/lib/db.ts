@@ -58,7 +58,7 @@ function cloneCategories(categories: CategoryDef[]): CategoryDef[] {
 // Fresh accounts trust the "Joint ·" marker Revolut puts in the notification title to
 // decide whether a payment is shared.
 const DEFAULT_CAPTURE: CaptureSettings = {
-  sources: { intesa: true, revolut: true, paypal: true, satispay: true },
+  sources: { intesa: true, revolut: true, paypal: true, satispay: true, youalert: true },
   revolutSplit: 'joint-only',
   paypalDuplicateWarning: true,
   depositAmounts: [103.29]

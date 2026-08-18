@@ -20,6 +20,8 @@ const SOURCE_LABELS: Record<string, string> = {
   intesa: 'Intesa Sanpaolo',
   revolut: 'Revolut',
   paypal: 'PayPal',
+  satispay: 'Satispay',
+  youalert: 'YOUALERT',
   manual: 'Manuale',
   unknown: 'Sconosciuto'
 }

@@ -54,7 +54,16 @@ export const INCOME_TYPES = [
 
 export type IncomeType = typeof INCOME_TYPES[number]
 
-export type PaymentSource = 'intesa' | 'revolut' | 'paypal' | 'satispay' | 'manual' | 'unknown'
+// 'youalert' is the card-issuer SMS alert (shown by the Messaggi app, sender YOUALERT),
+// not a banking app: different wording, amounts written as "54,48 Euro".
+export type PaymentSource =
+  | 'intesa'
+  | 'revolut'
+  | 'paypal'
+  | 'satispay'
+  | 'youalert'
+  | 'manual'
+  | 'unknown'
 
 // Which notification sources this account captures, and how to treat each of them.
 export interface CaptureSettings {

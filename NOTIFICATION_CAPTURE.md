@@ -1,7 +1,7 @@
 # Cattura automatica delle spese dalle notifiche (Android)
 
 ```
-Notifica banca (Intesa / Revolut / PayPal / Satispay)
+Notifica banca (Intesa / Revolut / PayPal / Satispay / SMS YOUALERT)
    → [MacroDroid: "Notification Received"]
    → POST a  https://<tuo-dominio>.vercel.app/api/ingest?secret=<TOKEN DELLA PERSONA>
    → bozza scritta su Supabase, sull'account a cui appartiene il token
@@ -94,10 +94,20 @@ Da rifare **identico su ogni telefono**, cambiando solo il token nell'URL.
 
 **Trigger** → *Applicazioni* → **Notifica ricevuta** (*Notification Received*)
 - **Applicazioni**: seleziona tutte quelle che servono a questa persona, in un unico trigger.
-  Per Marta: **Revolut**, **Satispay**, **PayPal**.
+  Per Marta: **Revolut**, **Satispay**, **PayPal**, e **Messaggi** (per gli SMS YOUALERT).
   Per te: **Intesa Sanpaolo Mobile**, **Revolut**, **PayPal**.
-- Lascia vuoto il filtro sul testo: a scartare le notifiche che non sono pagamenti
-  (premi, referral, avvisi di login, saldo) ci pensa il server.
+- **Filtro sul testo**: lascialo vuoto **se non hai selezionato Messaggi**. A scartare
+  premi, referral, avvisi di login e saldi ci pensa il server.
+
+> ⚠️ **Se hai selezionato Messaggi, il filtro mettilo.** Altrimenti *ogni* SMS che ricevi
+> viene spedito all'endpoint. Nel campo *Testo contenuto* del trigger scrivi:
+> ```
+> Autorizzato pagamento
+> ```
+> Così parte solo l'avviso della carta. (Il server si difende comunque da solo: una
+> notifica non riconosciuta che arriva da un'app di messaggistica non diventa mai una
+> spesa, nemmeno se contiene una cifra tipo "ti devo 20 €". Ma è meglio non mandare i
+> propri SMS in giro per niente.)
 
 **Azione** → *Connettività* → **Richiesta HTTP** — configurazione **a prova di errore**
 (niente header, niente form):
@@ -119,9 +129,30 @@ Da rifare **identico su ogni telefono**, cambiando solo il token nell'URL.
 
 > Perché così: MacroDroid non URL-codifica il corpo e gestisce male gli header, quindi
 > form-urlencoded + header davano errori. Token nell'URL + corpo di testo = zero problemi.
-> La 2ª riga (il titolo) è quella che conta per **Revolut** e **Satispay**, che mettono
-> l'esercente lì; per Revolut è anche dove compare la scritta **Joint** dei conti
-> cointestati.
+> La 2ª riga (il titolo) è indispensabile: **Revolut** e **Satispay** ci mettono
+> l'esercente, per Revolut è anche dove compare il **Joint** dei conti cointestati, e per
+> gli SMS è il mittente (**YOUALERT**) da cui l'app riconosce l'avviso della carta.
+
+### Formati riconosciuti
+
+| Fonte | Titolo | Corpo |
+|---|---|---|
+| Revolut personale | `Nintendo` (solo l'esercente) | `🍿 You spent €16.79` + `Balance: €72.28` |
+| Revolut cointestato | `Joint · Tamoil` | `€103.29 spent` + `EUR balance: €121.41` |
+| Intesa | — | `Hai pagato 1,99 € con la carta *2896 il 07.01 alle ore 12:44 da GOOGLE` |
+| YOUALERT (SMS carta) | `YOUALERT` | `Autorizzato pagamento di 54,48 Euro - AURORA PAESTUM ITALY(... con KDue Black n.: *5069 Data: 18/08/2026 Ora: 13:02 Saldo disponibile: +867,66 Euro` |
+
+Note su come vengono letti:
+
+- **Revolut** distingue il conto cointestato dal prefisso `Joint ·` nel titolo. Un
+  pagamento personale ha il solo nome dell'esercente, senza prefisso: per questo la regola
+  *Solo sul conto cointestato* funziona anche su una carta usata per entrambe le cose.
+- **YOUALERT** contiene **due** importi: quello del pagamento e il `Saldo disponibile` in
+  coda. L'app si aggancia alla formula "Autorizzato pagamento di … Euro", quindi prende
+  sempre quello giusto. Da questo avviso legge anche data, ora e ultime 4 cifre della
+  carta, e usa la **data dell'SMS** invece di quella di ricezione.
+- Qualsiasi altro SMS dallo stesso mittente (codici OTP, avvisi) non è un pagamento e
+  viene scartato.
 
 ### 2.3 Prova sul telefono
 
@@ -150,12 +181,14 @@ body di 3 righe con `%NTITLE` e `%NTEXT` (e il nome dell'app).
 Queste stanno **nell'app**, non su Vercel: ogni persona le imposta per sé e viaggiano con
 l'account.
 
-- **App da catturare** — spegni una fonte quando quelle spese sono già coperte in altro
-  modo. Esempio: PayPal, se quei pagamenti sono tutti ricorrenti già registrati come regole.
-  Una fonte spenta viene scartata sul server: non arriva nemmeno in "Da confermare".
+- **App da catturare** — Intesa, Revolut, PayPal, Satispay, YOUALERT. Spegni una fonte
+  quando quelle spese sono già coperte in altro modo. Esempio: PayPal, se quei pagamenti
+  sono tutti ricorrenti già registrati come regole. Una fonte spenta viene scartata sul
+  server: non arriva nemmeno in "Da confermare".
 - **Revolut: dividi a metà** —
-  - *Solo sul conto cointestato* (default): l'app dimezza **solo** le notifiche il cui titolo
-    inizia con "Joint", e registra per intero i pagamenti personali sulla stessa carta.
+  - *Solo sul conto cointestato* (default): l'app dimezza **solo** le notifiche il cui
+    titolo inizia con `Joint ·`, e registra per intero i pagamenti personali sulla stessa
+    carta (che arrivano col solo nome dell'esercente).
   - *Sempre*: comportamento storico, ogni pagamento Revolut viene dimezzato.
   - *Mai*: nessuna divisione.
 - **Importi da segnalare come cauzione** — precompilato con **103,29 €**, il blocco che i
@@ -163,7 +196,8 @@ l'account.
   importo resta in "Da confermare" con un avviso ben visibile: la elimini invece di
   registrarla. Non viene mai scartata in automatico, così se quella cifra è una spesa vera
   la puoi confermare lo stesso. Il controllo guarda anche l'importo **prima** dell'eventuale
-  ÷2, quindi funziona anche su una carta Revolut cointestata.
+  ÷2: senza questo, la cauzione Tamoil da 103,29 € su Revolut cointestato diventerebbe
+  51,65 € e non verrebbe più riconosciuta.
 
 ---
 

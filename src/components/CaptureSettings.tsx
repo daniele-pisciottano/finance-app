@@ -14,7 +14,8 @@ const SOURCE_LABELS: Record<keyof CaptureSettingsType['sources'], string> = {
   intesa: 'Intesa Sanpaolo',
   revolut: 'Revolut',
   paypal: 'PayPal',
-  satispay: 'Satispay'
+  satispay: 'Satispay',
+  youalert: 'YOUALERT (SMS carta)'
 }
 
 const SPLIT_LABELS: Record<CaptureSettingsType['revolutSplit'], string> = {

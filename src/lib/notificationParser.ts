@@ -36,10 +36,11 @@ export const DEFAULT_CAPTURE_RULES: Pick<CaptureSettings, 'revolutSplit' | 'depo
   paypalDuplicateWarning: true
 }
 
-// Revolut prefixes the notification title with the account name: "Joint · Tenuterrico",
-// "Personal · KFC". Detect the shared case before the prefix gets stripped.
+// Revolut titles a shared-account payment "Joint · Tamoil" and a personal one with the
+// bare merchant ("Nintendo") — no prefix at all. Requiring the separator keeps a merchant
+// that merely starts with the word (a "Joint Venture Srl") from being halved.
 export function isJointTitle(title: string | undefined): boolean {
-  return /^\s*(joint|shared|condiviso|cointestato)\b/i.test(title || '')
+  return /^\s*(?:joint|shared|condiviso|cointestato)\s*[·•|:-]/i.test(title || '')
 }
 
 // "Joint · Tenuterrico" -> "Tenuterrico" ; "KFC" -> "KFC".
@@ -132,19 +133,39 @@ function parseDayMonth(dd: string, mm: string, today: Date): string | null {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
-function detectSource(text: string, appHint?: string): PaymentSource {
+// "18/08/2026" -> "2026-08-18". Returns null on anything that isn't a plausible date.
+function parseSlashDate(dd: string, mm: string, yyyy: string): string | null {
+  const day = parseInt(dd, 10)
+  const month = parseInt(mm, 10)
+  const year = parseInt(yyyy, 10)
+  if (!day || !month || day > 31 || month > 12 || year < 2000 || year > 2100) return null
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+function detectSource(text: string, appHint?: string, title?: string): PaymentSource {
   const hint = (appHint || '').toLowerCase()
   if (hint.includes('intesa') || hint.includes('sanpaolo')) return 'intesa'
   if (hint.includes('revolut')) return 'revolut'
   if (hint.includes('paypal')) return 'paypal'
   if (hint.includes('satispay')) return 'satispay'
+  // The SMS alert arrives through whatever messaging app is installed, so it can only be
+  // recognised by its sender or its wording — never by the app name.
+  if ((title || '').toLowerCase().includes('youalert')) return 'youalert'
   const t = text.toLowerCase()
+  if (t.includes('youalert')) return 'youalert'
+  if (/autorizzat\w*\s+pagament\w*\s+di\s+[\d.,]+\s*(?:euro|eur|€)/i.test(text)) return 'youalert'
   if (t.includes('revolut')) return 'revolut'
   if (t.includes('paypal')) return 'paypal'
   if (t.includes('satispay')) return 'satispay'
   if (t.includes('hai pagato') && t.includes('con la carta')) return 'intesa'
   return 'unknown'
 }
+
+// Capturing the SMS alert means pointing the phone automation at a messaging app, which
+// sees every other message too. A text with a number in it ("ti devo 20 €") must not
+// become an expense, so an unrecognised notification from a messaging app is never a
+// payment — only the wording of a real card alert gets through.
+const MESSAGING_APPS = /messag|messenger|\bsms\b|\bmms\b|whatsapp|telegram|signal|textra|mensajes|chat/i
 
 export interface ParseOptions {
   appHint?: string // app / package name from the phone automation
@@ -156,7 +177,7 @@ export interface ParseOptions {
 
 export function parseNotification(text: string, options: ParseOptions = {}): ParsedExpense {
   const today = options.today ?? new Date()
-  const source = detectSource(text, options.appHint)
+  const source = detectSource(text, options.appHint, options.title)
   const rules = { ...DEFAULT_CAPTURE_RULES, ...options.capture }
 
   const base: ParsedExpense = {
@@ -249,6 +270,33 @@ export function parseNotification(text: string, options: ParseOptions = {}): Par
     return finish(base)
   }
 
+  if (source === 'youalert') {
+    // Autorizzato pagamento di 54,48 Euro - AURORA PAESTUM ITALY(Via Dante Alighi
+    // con KDue Black n.: *5069 Data: 18/08/2026 Ora: 13:02 Saldo disponibile: +867,66 Euro
+    //
+    // Anchored on the "Autorizzato pagamento" wording on purpose: this source shares the
+    // inbox with every other SMS, and the trailing "Saldo disponibile" carries a second
+    // amount that must never be mistaken for the payment.
+    const m = text.match(
+      /Autorizzat\w*\s+pagament\w*\s+di\s+([\d.]*\d,\d{2})\s*(?:Euro|EUR|€)\s*[-–—]\s*(.+?)\s*(?=\(|\s+con\s+\w|\s*n\.\s*:|\s*Data\s*:|$)/i
+    )
+    if (m) {
+      const amount = parseItalianAmount(m[1])
+      base.rawAmount = amount
+      base.amount = amount
+      base.merchant = m[2].trim() || null
+      base.isPayment = amount != null
+
+      const card = text.match(/n\.\s*:\s*\*?(\d{3,})/i)
+      if (card) base.card = card[1]
+      const date = text.match(/Data\s*:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i)
+      if (date) base.occurredAt = parseSlashDate(date[1], date[2], date[3])
+      const time = text.match(/Ora\s*:\s*(\d{1,2}:\d{2})/i)
+      if (time) base.time = time[1]
+    }
+    return finish(base) // any other SMS from this sender is not a payment
+  }
+
   if (source === 'revolut') {
     // Real formats:
     //   "Paid $2 at KFC"                (merchant in the "at ..." part or the title)
@@ -256,7 +304,7 @@ export function parseNotification(text: string, options: ParseOptions = {}): Par
     // Only treat as a payment if a spend keyword + amount are present (this filters
     // out reward / referral / info notifications).
     const titleMerchant = cleanMerchantTitle(options.title || '')
-    base.joint = isJointTitle(options.title) || /\bjoint\b/i.test(text)
+    base.joint = isJointTitle(options.title)
     let raw: number | null = null
     let merchant: string | null = titleMerchant || null
 
@@ -287,6 +335,7 @@ export function parseNotification(text: string, options: ParseOptions = {}): Par
   }
 
   // Unknown source: best-effort amount + title as merchant.
+  if (MESSAGING_APPS.test(options.appHint || '')) return finish(base)
   base.rawAmount = base.amount = firstAmount(text)
   base.merchant = options.title || null
   base.isPayment = base.amount != null

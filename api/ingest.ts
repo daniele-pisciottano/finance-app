@@ -20,14 +20,14 @@
 // Legacy single-user setup, still honoured:
 //   INGEST_SECRET + INGEST_USER_ID
 
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
 type MerchantTag =
   | 'groceries' | 'fuel' | 'transport' | 'toll' | 'restaurant' | 'bar' | 'delivery'
   | 'pharmacy' | 'health' | 'subscription' | 'clothing' | 'beauty' | 'pets' | 'home'
   | 'leisure' | 'travel' | 'gift' | 'phone' | 'sport'
 
-type Source = 'intesa' | 'revolut' | 'paypal' | 'satispay' | 'unknown'
+type Source = 'intesa' | 'revolut' | 'paypal' | 'satispay' | 'youalert' | 'unknown'
 
 interface CaptureRules {
   sources: Record<Exclude<Source, 'unknown'>, boolean>
@@ -37,7 +37,7 @@ interface CaptureRules {
 }
 
 const FALLBACK_RULES: CaptureRules = {
-  sources: { intesa: true, revolut: true, paypal: true, satispay: true },
+  sources: { intesa: true, revolut: true, paypal: true, satispay: true, youalert: true },
   revolutSplit: 'joint-only',
   paypalDuplicateWarning: true,
   depositAmounts: [103.29]
@@ -127,8 +127,9 @@ export default async function handler(req: any, res: any) {
 
     const draft = {
       id,
+      // The SMS alert states a full date; every other source only has the receipt time.
+      date: parsed.occurredAt || today,
       type: 'expense',
-      date: today,
       amount,
       // No category: the app maps `capturedTag` onto its own taxonomy.
       capturedTag: parsed.tag,
@@ -193,7 +194,7 @@ function parseTokens(rawTokens?: string, legacySecret?: string, legacyUser?: str
   return out
 }
 
-async function loadRules(supabase: any, userId: string): Promise<CaptureRules> {
+async function loadRules(supabase: SupabaseClient, userId: string): Promise<CaptureRules> {
   try {
     const { data } = await supabase
       .from('records')
@@ -239,12 +240,27 @@ interface ParsedExpense {
   joint: boolean
   halved: boolean
   possibleDeposit: boolean
+  occurredAt?: string
   tag?: MerchantTag
 }
 
+// Revolut titles a shared-account payment "Joint · Tamoil" and a personal one with the
+// bare merchant ("Nintendo"). Requiring the separator keeps a merchant that merely starts
+// with the word from being halved.
 function isJointTitle(title?: string): boolean {
-  return /^\s*(joint|shared|condiviso|cointestato)\b/i.test(title || '')
+  return /^\s*(?:joint|shared|condiviso|cointestato)\s*[·•|:-]/i.test(title || '')
 }
+
+// "18/08/2026" -> "2026-08-18"
+function parseSlashDate(dd: string, mm: string, yyyy: string): string | null {
+  const day = parseInt(dd, 10), month = parseInt(mm, 10), year = parseInt(yyyy, 10)
+  if (!day || !month || day > 31 || month > 12 || year < 2000 || year > 2100) return null
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+// The card SMS alert arrives through a messaging app, which sees every other message too.
+// An unrecognised notification from one is never a payment.
+const MESSAGING_APPS = /messag|messenger|\bsms\b|\bmms\b|whatsapp|telegram|signal|textra|mensajes|chat/i
 
 function cleanMerchantTitle(title: string): string {
   return title.replace(/^\s*(?:joint|shared|current|personal|condiviso|cointestato|conto\w*)\s*[·•|:-]\s*/i, '').trim()
@@ -300,13 +316,16 @@ function guessTag(merchant: string | null): MerchantTag | undefined {
   return undefined
 }
 
-function detectSource(text: string, appHint?: string): Source {
+function detectSource(text: string, appHint?: string, title?: string): Source {
   const h = (appHint || '').toLowerCase()
   if (h.includes('intesa') || h.includes('sanpaolo')) return 'intesa'
   if (h.includes('revolut')) return 'revolut'
   if (h.includes('paypal')) return 'paypal'
   if (h.includes('satispay')) return 'satispay'
+  if ((title || '').toLowerCase().includes('youalert')) return 'youalert'
   const t = text.toLowerCase()
+  if (t.includes('youalert')) return 'youalert'
+  if (/autorizzat\w*\s+pagament\w*\s+di\s+[\d.,]+\s*(?:euro|eur|€)/i.test(text)) return 'youalert'
   if (t.includes('revolut')) return 'revolut'
   if (t.includes('paypal')) return 'paypal'
   if (t.includes('satispay')) return 'satispay'
@@ -323,7 +342,7 @@ function firstAmount(text: string): number | null {
 }
 
 function parseNotification(text: string, title: string | undefined, appHint: string | undefined, rules: CaptureRules): ParsedExpense {
-  const source = detectSource(text, appHint)
+  const source = detectSource(text, appHint, title)
   const out: ParsedExpense = { source, isPayment: false, amount: null, rawAmount: null, merchant: null, joint: false, halved: false, possibleDeposit: false }
 
   const finish = (): ParsedExpense => {
@@ -372,9 +391,28 @@ function parseNotification(text: string, title: string | undefined, appHint: str
     return finish()
   }
 
+  if (source === 'youalert') {
+    // Autorizzato pagamento di 54,48 Euro - AURORA PAESTUM ITALY(Via Dante Alighi
+    // con KDue Black n.: *5069 Data: 18/08/2026 Ora: 13:02 Saldo disponibile: +867,66 Euro
+    //
+    // Anchored on the wording on purpose: this source shares the inbox with every other
+    // SMS, and the trailing "Saldo disponibile" carries an amount that is not the payment.
+    const m = text.match(
+      /Autorizzat\w*\s+pagament\w*\s+di\s+([\d.]*\d,\d{2})\s*(?:Euro|EUR|€)\s*[-–—]\s*(.+?)\s*(?=\(|\s+con\s+\w|\s*n\.\s*:|\s*Data\s*:|$)/i
+    )
+    if (m) {
+      out.amount = out.rawAmount = parseItalianAmount(m[1])
+      out.merchant = m[2].trim() || null
+      out.isPayment = out.amount != null
+      const date = text.match(/Data\s*:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i)
+      if (date) out.occurredAt = parseSlashDate(date[1], date[2], date[3]) ?? undefined
+    }
+    return finish() // any other SMS from this sender is not a payment
+  }
+
   if (source === 'revolut') {
     const titleMerchant = cleanMerchantTitle(title || '')
-    out.joint = isJointTitle(title) || /\bjoint\b/i.test(text)
+    out.joint = isJointTitle(title)
     let raw: number | null = null
     out.merchant = titleMerchant || null
     const atLine = text.match(
@@ -400,6 +438,7 @@ function parseNotification(text: string, title: string | undefined, appHint: str
     return finish()
   }
 
+  if (MESSAGING_APPS.test(appHint || '')) return finish()
   out.amount = out.rawAmount = firstAmount(text)
   out.merchant = title || null
   out.isPayment = out.amount != null
