@@ -94,6 +94,15 @@ Il setup iniziale compare solo su un account **davvero** nuovo: al login su un s
 dispositivo l'app aspetta la prima sincronizzazione, così non ti chiede di riscegliere le
 categorie e non sovrascrive quelle che hai già.
 
+**Se su un altro dispositivo mancano le spese vecchie**, quelle arrivate da un backup JSON:
+la sincronizzazione normale porta solo quello che è cambiato dall'ultimo giro, e uno storico
+importato può restarne fuori. Sul dispositivo che **ha** lo storico (quello dove hai fatto
+l'import) premi *Impostazioni → Account e sincronizzazione → **Risincronizza tutto***: rimanda
+in cloud l'intero archivio. Gli altri dispositivi lo scaricano alla sincronizzazione successiva.
+
+Premilo sempre sul dispositivo giusto: manda al cloud quello che quel dispositivo ha in
+memoria, sotto l'account con cui sei loggato in quel momento.
+
 ---
 
 ## 6. Cattura automatica dalle notifiche

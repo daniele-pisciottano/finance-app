@@ -59,7 +59,11 @@ function toTransaction(raw: unknown): Transaction | null {
     // and let the user set up the rules they actually want.
     isRecurring: false,
     createdAt: num(raw.createdAt) ?? now,
-    updatedAt: num(raw.updatedAt) ?? now
+    // `updatedAt` is the sync engine's cursor, so it has to mean "written to this
+    // device", not whatever clock produced the file. Carrying the backup's own stamp
+    // over left restored history permanently behind the push watermark: it never
+    // reached the server, while transactions typed after the import did.
+    updatedAt: now
   }
 }
 
@@ -75,7 +79,7 @@ function toSavingGoal(raw: unknown): SavingGoal | null {
     maxSpendingByCategory: isRecord(raw.maxSpendingByCategory)
       ? (raw.maxSpendingByCategory as SavingGoal['maxSpendingByCategory'])
       : undefined,
-    updatedAt: num(raw.updatedAt) ?? Date.now()
+    updatedAt: Date.now()
   }
 }
 
@@ -95,7 +99,7 @@ function toRecurringRule(raw: unknown): RecurringRule | null {
     active: raw.active !== false,
     startMonth: typeof raw.startMonth === 'string' ? raw.startMonth : new Date().toISOString().slice(0, 7),
     createdAt: num(raw.createdAt) ?? now,
-    updatedAt: num(raw.updatedAt) ?? now
+    updatedAt: now
   }
 }
 

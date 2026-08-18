@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { RefreshCw, LogOut, Cloud, CloudOff, Check, AlertCircle } from 'lucide-react'
+import { RefreshCw, LogOut, Cloud, CloudOff, Check, AlertCircle, CloudUpload } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/store/authStore'
-import { syncNow, getSyncStatus, subscribeSync, type SyncStatus } from '@/lib/sync'
+import { syncNow, resyncEverything, getSyncStatus, subscribeSync, type SyncStatus } from '@/lib/sync'
 import { dbOperations } from '@/lib/db'
 
 function StatusLine({ status, lastError, lastSyncedAt }: { status: SyncStatus; lastError: string | null; lastSyncedAt: number }) {
@@ -32,6 +32,14 @@ export function SyncAccount() {
 
   if (!configured) return null
 
+  // The incremental sync only carries what changed since the last run. When a device
+  // holds history the server never received — a restored backup, an interrupted first
+  // sync — this replays everything in both directions.
+  const handleFullResync = async () => {
+    if (!confirm('Rimanda al cloud tutto lo storico di questo dispositivo e riscarica tutto. Utile se mancano vecchie spese. Continuare?')) return
+    await resyncEverything()
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -55,6 +63,15 @@ export function SyncAccount() {
             Esci
           </Button>
         </div>
+        <Button
+          variant="ghost"
+          className="w-full text-muted-foreground"
+          onClick={() => void handleFullResync()}
+          disabled={status === 'syncing'}
+        >
+          <CloudUpload className="h-4 w-4 mr-2" />
+          Risincronizza tutto
+        </Button>
       </CardContent>
     </Card>
   )

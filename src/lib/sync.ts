@@ -6,6 +6,14 @@ import type { Transaction, SavingGoal, RecurringRule, UserSettings } from '@/typ
 //   { user_id, collection, id, data (jsonb), updated_at (bigint), deleted (bool) }
 // One table + one RLS policy keeps the schema tiny and the local data model
 // authoritative (CSV/export keep working untouched).
+//
+// Two cursors, deliberately not one:
+//   lastPulledAt — the highest `updated_at` actually seen from the server. It has to
+//     live in the same coordinate space as the column it filters on. Advancing it to
+//     Date.now() instead would skip every row another device writes with an earlier
+//     stamp, which is precisely what restored history looks like.
+//   lastPushedAt — this device's own clock at the last successful push, compared
+//     against local `updatedAt` values, which are always local write times.
 
 type Collection = 'transactions' | 'savingGoals' | 'recurringRules' | 'settings'
 const SYNCED_COLLECTIONS: Exclude<Collection, 'settings'>[] = ['transactions', 'savingGoals', 'recurringRules']
@@ -47,10 +55,54 @@ export function setOnDataChanged(fn: () => void | Promise<void>) {
   onDataChanged = fn
 }
 
+// PostgREST caps how many rows one response may carry, and a restored history runs
+// well past that cap — so the pull walks pages instead of trusting a single request.
+const PULL_PAGE = 500
+
 function updatedAtOf(collection: Collection, record: unknown, settingsTs: number): number {
   if (collection === 'settings') return settingsTs
-  const r = record as { updatedAt?: number }
-  return r.updatedAt ?? 0
+  const r = record as { updatedAt?: number; createdAt?: number }
+  // Records predating the sync engine still have to reach the server: fall back to
+  // the creation time, then to 1 so they clear a zeroed cursor rather than sitting
+  // at 0 and failing the strict `>` test forever.
+  return r.updatedAt ?? r.createdAt ?? 1
+}
+
+// One IndexedDB serves whoever signs in on this browser, so a session change has to
+// be noticed: pushing with the new session's user_id would file the previous
+// account's records under the new account. Two people sharing a laptop is the normal
+// case here, not an exotic one. Returns true when the local copy was reset.
+async function adoptLocalCopy(userId: string): Promise<boolean> {
+  const owner = await dbOperations.getSyncOwner()
+  if (owner === userId) return false
+  // No owner recorded means the copy predates this check: it belongs to whoever is
+  // signing in now (the only account that has ever used it), so claim it as-is.
+  if (owner !== null) await dbOperations.clearAllData()
+  await dbOperations.setSyncOwner(userId)
+  return owner !== null
+}
+
+// Installs that ran the single-cursor engine have only `lastPulledAt`. Seed the push
+// cursor from it rather than zeroing it: a browser can still hold records belonging
+// to whoever used it before this check existed, and a blanket push would file them
+// under the account signed in now. Repairing a device that never sent its history is
+// therefore a deliberate act — resyncEverything, behind a confirmation.
+async function splitCursorsOnce(): Promise<void> {
+  if (await dbOperations.getSyncMeta('cursorSplitDone')) return
+  const legacy = await dbOperations.getSyncMeta('lastPulledAt')
+  await dbOperations.setSyncMeta('lastPushedAt', legacy)
+  await dbOperations.setSyncMeta('cursorSplitDone', 1)
+}
+
+// Replay this device's whole history in both directions. Re-dating the records is
+// what makes it work regardless of which device comes online first: a row re-sent
+// with its original stamp would land behind cursors that already moved past it,
+// which is how the imported backup stayed invisible in the first place.
+export async function resyncEverything(): Promise<void> {
+  await dbOperations.restampForResync()
+  await dbOperations.setSyncMeta('lastPulledAt', 0)
+  await dbOperations.setSyncMeta('lastPushedAt', 0)
+  await syncNow()
 }
 
 // Read everything local as envelopes (excluding deletes — those come from tombstones).
@@ -136,26 +188,37 @@ export async function syncNow(): Promise<void> {
   running = true
   setStatus('syncing')
   try {
-    const since = await dbOperations.getSyncMeta('lastPulledAt')
-    const watermark = Date.now()
-    let maxSeen = since
+    const reset = await adoptLocalCopy(sessionData.session.user.id)
+    await splitCursorsOnce()
+    const pullSince = await dbOperations.getSyncMeta('lastPulledAt')
+    const pushSince = await dbOperations.getSyncMeta('lastPushedAt')
+    const pushWatermark = Date.now()
+    let maxSeen = pullSince
 
-    // --- PULL ---
-    const { data: remoteRows, error: pullError } = await supabase
-      .from('records')
-      .select('collection,id,data,updated_at,deleted')
-      .gt('updated_at', since)
-    if (pullError) throw pullError
+    // --- PULL (paged) ---
+    let changed = reset
+    for (let offset = 0; ; offset += PULL_PAGE) {
+      const { data: page, error: pullError } = await supabase
+        .from('records')
+        .select('collection,id,data,updated_at,deleted')
+        .gt('updated_at', pullSince)
+        .order('updated_at', { ascending: true })
+        .order('collection', { ascending: true })
+        .order('id', { ascending: true })
+        .range(offset, offset + PULL_PAGE - 1)
+      if (pullError) throw pullError
 
-    let changed = false
-    for (const row of (remoteRows ?? []) as Envelope[]) {
-      if (row.updated_at > maxSeen) maxSeen = row.updated_at
-      const applied = await applyRemote(row)
-      if (applied) changed = true
+      const rows = (page ?? []) as Envelope[]
+      for (const row of rows) {
+        if (row.updated_at > maxSeen) maxSeen = row.updated_at
+        const applied = await applyRemote(row)
+        if (applied) changed = true
+      }
+      if (rows.length < PULL_PAGE) break
     }
 
-    // --- PUSH (delta since last watermark) ---
-    const localEnvelopes = await gatherLocalEnvelopes(since)
+    // --- PUSH (delta since this device's last push) ---
+    const localEnvelopes = await gatherLocalEnvelopes(pushSince)
     if (localEnvelopes.length > 0) {
       const userId = sessionData.session.user.id
       const payload = localEnvelopes.map((e) => ({
@@ -166,8 +229,6 @@ export async function syncNow(): Promise<void> {
         updated_at: e.updated_at,
         deleted: e.deleted
       }))
-      for (const e of localEnvelopes) if (e.updated_at > maxSeen) maxSeen = e.updated_at
-
       // Chunk to keep request sizes sane.
       for (let i = 0; i < payload.length; i += 200) {
         const chunk = payload.slice(i, i + 200)
@@ -185,7 +246,11 @@ export async function syncNow(): Promise<void> {
       }
     }
 
-    await dbOperations.setSyncMeta('lastPulledAt', Math.max(watermark, maxSeen))
+    // Only what the server actually showed us advances the pull cursor — our own
+    // freshly pushed rows come back once as a no-op, which is cheaper than the risk
+    // of stepping over a peer's older row.
+    await dbOperations.setSyncMeta('lastPulledAt', maxSeen)
+    await dbOperations.setSyncMeta('lastPushedAt', pushWatermark)
     await dbOperations.setSyncMeta('lastSyncedAt', Date.now())
 
     if (changed && onDataChanged) await onDataChanged()
