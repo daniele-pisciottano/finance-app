@@ -90,69 +90,79 @@ Da rifare **identico su ogni telefono**, cambiando solo il token nell'URL.
 
 ### 2.2 La macro
 
-**Aggiungi macro** → dai un nome (es. "Spese → Finance App").
+**Aggiungi macro** → dai un nome (es. "Finance").
 
-**Trigger** → *Applicazioni* → **Notifica ricevuta** (*Notification Received*)
-- **Applicazioni**: seleziona tutte quelle che servono a questa persona, in un unico trigger.
-  Per Marta: **Revolut**, **Satispay**, **PayPal**, e **Messaggi** (per gli SMS YOUALERT).
-  Per te: **Intesa Sanpaolo Mobile**, **Revolut**, **PayPal**.
-- **Filtro sul testo**: lascialo vuoto **se non hai selezionato Messaggi**. A scartare
-  premi, referral, avvisi di login e saldi ci pensa il server.
+Serve **una macro con due trigger**, non uno solo. Il motivo: il filtro sul testo di un
+trigger vale per **tutte** le app elencate in quel trigger. Se metti Revolut, PayPal,
+Satispay e Messaggi insieme e poi filtri per "Autorizzato pagamento", passano **solo** gli
+SMS della carta e tutto il resto viene buttato via prima di partire. Due trigger separati
+risolvono: MacroDroid li mette in OR, basta che ne scatti uno.
 
-> ⚠️ **Se hai selezionato Messaggi, il filtro mettilo.** Altrimenti *ogni* SMS che ricevi
-> viene spedito all'endpoint. Nel campo *Testo contenuto* del trigger scrivi:
-> ```
-> Autorizzato pagamento
-> ```
-> Così parte solo l'avviso della carta. (Il server si difende comunque da solo: una
-> notifica non riconosciuta che arriva da un'app di messaggistica non diventa mai una
-> spesa, nemmeno se contiene una cifra tipo "ti devo 20 €". Ma è meglio non mandare i
-> propri SMS in giro per niente.)
+#### Trigger 1 — le app di pagamento
 
-**Azione** → *Connettività* → **Richiesta HTTP** — configurazione **a prova di errore**
-(niente header, niente form):
+*Applicazioni* → **Notifica Ricevuta**
+- **Applicazioni**: Revolut, Satispay, PayPal (e Intesa Sanpaolo Mobile se la usi).
+  **Non** mettere Messaggi qui.
+- **Contenuto Testo**: **Qualsiasi**. A scartare premi, referral, avvisi di login e
+  notifiche di saldo ci pensa il server.
+
+#### Trigger 2 — l'SMS della carta (solo se usi YOUALERT)
+
+*Applicazioni* → **Notifica Ricevuta**
+- **Applicazioni**: **Messaggi** (o l'app SMS che usi), e **solo** quella.
+- **Contenuto Testo**: **Contiene** → `Autorizzato pagamento`
+- Lascia spuntato *Senza distinzione tra maiuscole e minuscole*.
+
+Qui il filtro serve davvero: senza, ogni SMS che ricevi verrebbe spedito all'endpoint.
+(Il server si difende comunque — una notifica non riconosciuta che arriva da un'app di
+messaggistica non diventa mai una spesa, nemmeno se contiene una cifra — ma non c'è motivo
+di mandare i propri SMS in giro.)
+
+> **Android 15+**: nella schermata del trigger MacroDroid avvisa che alcuni contenuti delle
+> notifiche (tipicamente gli OTP) possono essere oscurati per privacy, e in quel caso il
+> trigger non scatta o arriva senza testo. Se l'SMS della carta non passa, disattiva
+> **Notifiche avanzate** nelle impostazioni di notifica del telefono.
+
+#### Azione — Richiesta HTTP
+
+*Connettività* → **Richiesta HTTP**. Una sola azione per entrambi i trigger.
+
 - Metodo: **POST**
-- URL — il token va **qui**, è alfanumerico e passa senza problemi:
-  ```
-  https://<tuo-dominio>.vercel.app/api/ingest?secret=IL_TOKEN_DI_QUESTA_PERSONA
-  ```
-- Content type: **text/plain**
-- **NON** aggiungere header personalizzati (era `x-ingest-secret` a dare errore).
-- Corpo — **3 righe**, con le "magic text" di MacroDroid (il pulsante `{ }` accanto al campo):
-  ```
-  [notification_app]
-  [notification_title]
-  [notification_text]
-  ```
+- URL: `https://<tuo-dominio>.vercel.app/api/ingest`
+
+Poi **una** delle due configurazioni qui sotto — l'endpoint le accetta entrambe.
+
+**Variante A — header + form** (è quella che gira sul telefono di Daniele, collaudata)
+
+| Scheda | Campo | Valore |
+|---|---|---|
+| *Parametri di intestazione* | `x-ingest-secret` | il token di questa persona |
+| *Contenuto del corpo* | Tipo di contenuto | `application/x-www-form-urlencoded` |
+| *Contenuto del corpo* | Testo | `app=[notification_app]&title=[notification_title]&text=[notification_text]` |
+
+**Variante B — token nell'URL + testo semplice**
+
+| Scheda | Campo | Valore |
+|---|---|---|
+| — | URL | `https://<tuo-dominio>.vercel.app/api/ingest?secret=IL_TOKEN` |
+| *Contenuto del corpo* | Tipo di contenuto | `text/plain` |
+| *Contenuto del corpo* | Testo | tre righe: nome app, titolo, testo |
+
+Usa la B se la A dà problemi con gli header su qualche versione di MacroDroid.
+
+> ⚠️ **Le variabili inseriscile con il pulsante `...`** accanto al campo del corpo, non
+> scrivendole a mano. La sintassi cambia tra le versioni di MacroDroid — su alcune è
+> `[notification_title]`, su altre `{not_title}` — e se sbagli parte il testo letterale:
+> la richiesta va a buon fine, il server non trova nessun importo e scarta tutto in
+> silenzio. È il modo più subdolo in cui questa configurazione può sembrare giusta e non
+> funzionare. Nel menù del pulsante cerca le voci **nome app della notifica**, **titolo
+> della notifica** e **testo della notifica**.
+
+Le tre informazioni servono tutte. Il titolo in particolare: Revolut e Satispay ci mettono
+l'esercente, Revolut ci scrive anche il nome del conto (da cui l'app capisce se è
+cointestato), e per gli SMS è il mittente da cui viene riconosciuto YOUALERT.
 
 **Vincoli**: nessuno. Salva.
-
-> Perché così: MacroDroid non URL-codifica il corpo e gestisce male gli header, quindi
-> form-urlencoded + header davano errori. Token nell'URL + corpo di testo = zero problemi.
-> La 2ª riga (il titolo) è indispensabile: **Revolut** e **Satispay** ci mettono
-> l'esercente, per Revolut è anche dove compare il **Joint** dei conti cointestati, e per
-> gli SMS è il mittente (**YOUALERT**) da cui l'app riconosce l'avviso della carta.
-
-### Formati riconosciuti
-
-| Fonte | Titolo | Corpo |
-|---|---|---|
-| Revolut personale | `Nintendo` (solo l'esercente) | `🍿 You spent €16.79` + `Balance: €72.28` |
-| Revolut cointestato | `Joint · Tamoil` | `€103.29 spent` + `EUR balance: €121.41` |
-| Intesa | — | `Hai pagato 1,99 € con la carta *2896 il 07.01 alle ore 12:44 da GOOGLE` |
-| YOUALERT (SMS carta) | `YOUALERT` | `Autorizzato pagamento di 54,48 Euro - AURORA PAESTUM ITALY(... con KDue Black n.: *5069 Data: 18/08/2026 Ora: 13:02 Saldo disponibile: +867,66 Euro` |
-
-Note su come vengono letti:
-
-- **Revolut** distingue il conto cointestato dal prefisso `Joint ·` nel titolo. Un
-  pagamento personale ha il solo nome dell'esercente, senza prefisso: per questo la regola
-  *Solo sul conto cointestato* funziona anche su una carta usata per entrambe le cose.
-- **YOUALERT** contiene **due** importi: quello del pagamento e il `Saldo disponibile` in
-  coda. L'app si aggancia alla formula "Autorizzato pagamento di … Euro", quindi prende
-  sempre quello giusto. Da questo avviso legge anche data, ora e ultime 4 cifre della
-  carta, e usa la **data dell'SMS** invece di quella di ricezione.
-- Qualsiasi altro SMS dallo stesso mittente (codici OTP, avvisi) non è un pagamento e
-  viene scartato.
 
 ### 2.3 Prova sul telefono
 
@@ -187,8 +197,8 @@ l'account.
   server: non arriva nemmeno in "Da confermare".
 - **Revolut: dividi a metà** —
   - *Solo sul conto cointestato* (default): l'app dimezza **solo** le notifiche il cui
-    titolo inizia con `Joint ·`, e registra per intero i pagamenti personali sulla stessa
-    carta (che arrivano col solo nome dell'esercente).
+    titolo inizia col nome del conto condiviso (`Joint ·`, `Conto cointestato ·`), e
+    registra per intero i pagamenti personali sulla stessa carta.
   - *Sempre*: comportamento storico, ogni pagamento Revolut viene dimezzato.
   - *Mai*: nessuna divisione.
 - **Importi da segnalare come cauzione** — precompilato con **103,29 €**, il blocco che i

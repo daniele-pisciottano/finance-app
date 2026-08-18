@@ -244,11 +244,13 @@ interface ParsedExpense {
   tag?: MerchantTag
 }
 
-// Revolut titles a shared-account payment "Joint · Tamoil" and a personal one with the
-// bare merchant ("Nintendo"). Requiring the separator keeps a merchant that merely starts
-// with the word from being halved.
+// Revolut names the account in the title, in the phone's own language: "Joint · Tamoil"
+// on an English phone, "Conto cointestato · Google Play" on an Italian one. Requiring the
+// separator keeps a merchant that merely starts with the word from being halved.
+const SHARED_ACCOUNT_PREFIX = /^\s*(?:conto\s+)?(?:joint|shared|condivis\w*|cointestat\w*)\s*[·•|:-]/i
+
 function isJointTitle(title?: string): boolean {
-  return /^\s*(?:joint|shared|condiviso|cointestato)\s*[·•|:-]/i.test(title || '')
+  return SHARED_ACCOUNT_PREFIX.test(title || '')
 }
 
 // "18/08/2026" -> "2026-08-18"
@@ -263,7 +265,12 @@ function parseSlashDate(dd: string, mm: string, yyyy: string): string | null {
 const MESSAGING_APPS = /messag|messenger|\bsms\b|\bmms\b|whatsapp|telegram|signal|textra|mensajes|chat/i
 
 function cleanMerchantTitle(title: string): string {
-  return title.replace(/^\s*(?:joint|shared|current|personal|condiviso|cointestato|conto\w*)\s*[·•|:-]\s*/i, '').trim()
+  return title
+    .replace(
+      /^\s*(?:conto\s+)?(?:joint|shared|current|personal\w*|condivis\w*|cointestat\w*|conto\w*)\s*[·•|:-]\s*/i,
+      ''
+    )
+    .trim()
 }
 
 function parseItalianAmount(s: string): number | null {
@@ -422,7 +429,10 @@ function parseNotification(text: string, title: string | undefined, appHint: str
       raw = parseAmountFlexible(atLine[1])
       out.merchant = titleMerchant || atLine[2].trim()
     } else {
+      // Every Revolut body carries a balance too ("Saldo del Pocket EUR: 88,82 €"), so
+      // each pattern anchors on a spending word — none takes "the first number".
       const spent =
+        text.match(/(?:spesa|pagamento|addebito)\s+di\s+([\d.,]+)\s*(?:€|EUR|\$|£)?/i) ||
         text.match(/(?:€|\$|£)\s*([\d.,]+)\s*(?:spent|speso|paid|pagat\w*)/i) ||
         text.match(/([\d.,]+)\s*(?:€|\$|£)?\s*(?:spent|speso)/i) ||
         text.match(/(?:spent|speso|paid|pagat\w*)\s*(?:€|\$|£)?\s*([\d.,]+)/i)
