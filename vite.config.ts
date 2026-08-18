@@ -11,33 +11,41 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
+      includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'mask-icon.svg'],
       manifest: {
         name: 'Finance Tracker',
         short_name: 'Finance',
-        description: 'Personal finance management app',
+        description: 'App per la gestione delle finanze personali',
+        lang: 'it',
         theme_color: '#0f172a',
         background_color: '#0f172a',
         display: 'standalone',
         orientation: 'portrait',
         scope: '/',
         start_url: '/',
+        // Chrome only offers "Installa app" (instead of a plain bookmark shortcut) when
+        // at least one icon of 192px or more actually loads. These live in public/ —
+        // keep them there, or the install prompt silently degrades to a shortcut.
         icons: [
           {
             src: 'pwa-192x192.png',
             sizes: '192x192',
-            type: 'image/png'
-          },
-          {
-            src: 'pwa-512x512.png',
-            sizes: '512x512',
-            type: 'image/png'
+            type: 'image/png',
+            purpose: 'any'
           },
           {
             src: 'pwa-512x512.png',
             sizes: '512x512',
             type: 'image/png',
-            purpose: 'any maskable'
+            purpose: 'any'
+          },
+          {
+            // Separate artwork: the launcher crops a maskable icon to its own shape, so
+            // this one is full-bleed with the bag inside the central 80% safe zone.
+            src: 'pwa-maskable-512x512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'maskable'
           }
         ]
       },
