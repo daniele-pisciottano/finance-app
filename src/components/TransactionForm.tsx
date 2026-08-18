@@ -52,6 +52,13 @@ export function TransactionForm({ open, onOpenChange, editTransaction }: Transac
     ? getSubcategories(primaryCategory as PrimaryCategory)
     : []
 
+  // A single-level taxonomy has no sub-field to fill in, and even a two-level one can
+  // hold a category nobody has split yet. Demanding a subcategory in either case left
+  // Salva disabled with nothing on screen to click to enable it.
+  const showSubcategory = !!primaryCategory && hasSubcategories
+  const subcategoryRequired = showSubcategory && subcategories.length > 0
+  const subcategoryChosen = !!secondaryCategory || !!newSubcategory
+
   // Reset form when dialog opens, or pre-populate for editing
   useEffect(() => {
     if (open) {
@@ -97,7 +104,7 @@ export function TransactionForm({ open, onOpenChange, editTransaction }: Transac
     e.preventDefault()
 
     if (!amount || parseFloat(amount) <= 0) return
-    if (type === 'expense' && (!primaryCategory || (!secondaryCategory && !newSubcategory))) return
+    if (type === 'expense' && (!primaryCategory || (subcategoryRequired && !subcategoryChosen))) return
     if (type === 'income' && !incomeType) return
 
     setIsSubmitting(true)
@@ -137,8 +144,8 @@ export function TransactionForm({ open, onOpenChange, editTransaction }: Transac
   }
 
   const isValid = type === 'expense'
-    ? amount && parseFloat(amount) > 0 && primaryCategory && (secondaryCategory || newSubcategory)
-    : amount && parseFloat(amount) > 0 && incomeType
+    ? !!amount && parseFloat(amount) > 0 && !!primaryCategory && (!subcategoryRequired || subcategoryChosen)
+    : !!amount && parseFloat(amount) > 0 && !!incomeType
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -261,9 +268,9 @@ export function TransactionForm({ open, onOpenChange, editTransaction }: Transac
               </div>
 
               {/* Secondary Category — hidden on accounts that use a single level */}
-              {primaryCategory && hasSubcategories && (
+              {showSubcategory && (
                 <div className="space-y-2">
-                  <Label>Sottocategoria</Label>
+                  <Label>Sottocategoria{subcategoryRequired ? '' : ' (opzionale)'}</Label>
                   <Select
                     value={showNewSubcategory ? '__new__' : secondaryCategory}
                     onValueChange={(value) => {

@@ -11,10 +11,11 @@ import type {
 } from '@/types'
 import { DEFAULT_CATEGORY_SET_ID, getCategorySet } from '@/lib/categoryPresets'
 
-// Simple key/value row for local sync bookkeeping (e.g. lastPulledAt).
+// Simple key/value row for local sync bookkeeping (cursors, and the id of the
+// account this browser's copy belongs to).
 interface SyncMeta {
   key: string
-  value: number
+  value: number | string
 }
 
 // Define the database
@@ -269,13 +270,35 @@ export const dbOperations = {
     await db.tombstones.delete(`${collection}:${recordId}`)
   },
 
+  // Re-dates every local record as "written now" so a full resync pushes history the
+  // server never received *and* peers actually fetch it: a row re-sent with its
+  // original stamp lands behind cursors that have already moved past it, which is how
+  // the imported backup stayed invisible in the first place.
+  async restampForResync(): Promise<void> {
+    const now = Date.now()
+    await db.transactions.toCollection().modify({ updatedAt: now })
+    await db.savingGoals.toCollection().modify({ updatedAt: now })
+    await db.recurringRules.toCollection().modify({ updatedAt: now })
+    await db.syncMeta.put({ key: 'settingsUpdatedAt', value: now })
+  },
+
   async getSyncMeta(key: string): Promise<number> {
     const row = await db.syncMeta.get(key)
-    return row?.value ?? 0
+    return typeof row?.value === 'number' ? row.value : 0
   },
 
   async setSyncMeta(key: string, value: number): Promise<void> {
     await db.syncMeta.put({ key, value })
+  },
+
+  // Which account the records currently in this browser belong to.
+  async getSyncOwner(): Promise<string | null> {
+    const row = await db.syncMeta.get('syncOwner')
+    return typeof row?.value === 'string' ? row.value : null
+  },
+
+  async setSyncOwner(userId: string): Promise<void> {
+    await db.syncMeta.put({ key: 'syncOwner', value: userId })
   },
 
   // Raw writes used to apply data pulled from the server (no side effects).
